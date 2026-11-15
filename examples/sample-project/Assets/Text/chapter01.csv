@@ -1,0 +1,13 @@
+ID,JP,EN,CN,KR,MaxLen
+CH01_INTRO_001,目が覚めたか、{player}。,"You're awake, {player}.",你醒了吗，{player}。,"눈을 떴구나, {player}.",
+CH01_INTRO_002,ここは……どこだ？,Where... am I?,这里……是哪里？,여기는…… 어디지?,
+CH01_INTRO_003,"王都の外れにある診療所だ。
+三日前、森で倒れていたお前を運んできた。","A clinic on the outskirts of the capital.
+Three days ago, I carried you here after you collapsed in the forest.","这里是王都郊外的诊所。
+三天前，你倒在森林里，是我把你带回来的。","왕도 외곽에 있는 진료소다.
+사흘 전, 숲에서 쓰러져 있던 너를 데려왔지.",
+CH01_CHOICE_001A,<b>信じる</b>,<b>Trust him</b>,<b>相信</b>,<b>믿는다,
+CH01_CHOICE_001B,……信じられるか,...Why should I believe that?,……谁会相信啊,,
+CH01_ITEM_001,{count} 個の薬草を手に入れた,You got {count} herbs,获得了药草,약초 {count}개를 얻었다,
+CH01_SHOP_001,①回復薬,Potion,回复药,회복약,6
+CH01_SHOP_002,毒消し,Antidote,解毒剂,해독제,6

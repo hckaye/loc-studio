@@ -1,0 +1,31 @@
+{
+  "name": "loc-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "cli": "node apps/cli/dist/index.js",
+    "dev:web": "npm run dev -w @loc-studio/web",
+    "build:web": "tsc -b && npm run build -w @loc-studio/web",
+    "start:web": "npm run start -w @loc-studio/web",
+    "smoke:web": "node apps/web/scripts/smoke.mjs",
+    "build:desktop": "npm run build -w @loc-studio/desktop",
+    "start:desktop": "npm run start -w @loc-studio/desktop",
+    "dist:desktop": "npm run dist -w @loc-studio/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,5 @@
+ID,JP,EN,CN,KR,MaxLen
+UI_OK,決定,OK,确定,확인,4
+UI_CANCEL,キャンセル,Cancel,取消,취소,6
+UI_SAVE_CONFIRM,セーブしますか？,Save your progress?,要保存吗？,저장하시겠습니까?,12
+UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gold} G,

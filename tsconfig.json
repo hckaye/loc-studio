@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/sdk" },
+    { "path": "packages/core" },
+    { "path": "packages/builtin" },
+    { "path": "packages/store" },
+    { "path": "packages/plugin-llm" },
+    { "path": "packages/server" },
+    { "path": "apps/cli" }
+  ]
+}

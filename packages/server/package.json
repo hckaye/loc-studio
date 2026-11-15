@@ -1,0 +1,23 @@
+{
+  "name": "@loc-studio/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@loc-studio/sdk": "0.1.0",
+    "@loc-studio/core": "0.1.0",
+    "@loc-studio/builtin": "0.1.0",
+    "@loc-studio/store": "0.1.0",
+    "@loc-studio/plugin-llm": "0.1.0"
+  }
+}

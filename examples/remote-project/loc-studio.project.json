@@ -1,0 +1,26 @@
+{
+  "name": "RemoteExample",
+  "languages": [
+    { "id": "ja", "label": "日本語", "pinned": true },
+    { "id": "en", "label": "英語", "basedOn": "ja" },
+    { "id": "ko", "label": "韓国語", "basedOn": "ja" }
+  ],
+  "tree": {
+    "use": "example.remoteTree",
+    "options": { "baseUrl": "http://127.0.0.1:4010", "baseUrlEnv": "EXAMPLE_API_URL", "tokenSecret": "example.apiToken" }
+  },
+  "formats": [{ "use": "example.remoteJson" }],
+  "sources": {
+    "tracker": {
+      "use": "example.trackerStatus",
+      "options": { "baseUrl": "http://127.0.0.1:4010", "baseUrlEnv": "EXAMPLE_API_URL", "tokenSecret": "example.apiToken" }
+    }
+  },
+  "columns": [
+    { "use": "builtin.key", "id": "key" },
+    { "use": "builtin.text", "id": "text" },
+    { "use": "builtin.textStatus", "id": "textStatus", "source": "tracker" },
+    { "use": "builtin.reviewStatus", "id": "reviewStatus", "of": "text" }
+  ],
+  "validators": ["builtin.untranslated", "builtin.whitespace"]
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.loc-studio/*.db
+.loc-studio/*.db-journal
+.loc-studio/*.lock
+.DS_Store
+.next/
+next-env.d.ts
+apps/desktop/dist/
+apps/desktop/build/
+apps/desktop/release/
+/tmp/

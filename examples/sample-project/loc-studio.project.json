@@ -1,0 +1,42 @@
+{
+  "name": "SampleGame",
+  "languages": [
+    { "id": "ja", "label": "日本語", "pinned": true },
+    { "id": "JaEnglish", "label": "英語（日本語から翻訳）", "basedOn": "ja", "group": "英語" },
+    { "id": "zh-Hans", "label": "中国語（簡体）", "basedOn": "ja" },
+    { "id": "ko", "label": "韓国語", "basedOn": "ja" }
+  ],
+  "tree": { "use": "builtin.globTree", "options": { "include": ["Assets/Text/**/*.csv"] } },
+  "formats": [
+    {
+      "use": "builtin.csv",
+      "match": "**/*.csv",
+      "options": {
+        "key": "ID",
+        "text": { "ja": "JP", "JaEnglish": "EN", "zh-Hans": "CN", "ko": "KR" },
+        "columns": { "maxLength": "MaxLen" }
+      }
+    }
+  ],
+  "syntaxes": ["builtin.braces", "builtin.tags"],
+  "columns": [
+    { "use": "builtin.key", "id": "key" },
+    { "use": "builtin.text", "id": "text" },
+    { "use": "builtin.textStatus", "id": "textStatus" },
+    { "use": "builtin.reviewStatus", "id": "reviewStatus", "of": "text" }
+  ],
+  "validators": [
+    "builtin.placeholders",
+    "builtin.tagBalance",
+    "builtin.maxLength",
+    { "use": "builtin.whitespace", "severity": "info" },
+    "builtin.untranslated",
+    { "use": "mystudio.lineWidth", "options": { "maxWidth": 18, "maxLines": 3 }, "languages": ["ja", "zh-Hans", "ko"] },
+    { "use": "mystudio.lineWidth", "options": { "maxWidth": 40, "maxLines": 3 }, "languages": ["JaEnglish"] },
+    { "use": "mystudio.forbiddenChars", "options": { "chars": "①②③㈱" } }
+  ],
+  "localSettings": {
+    "defaults": { "ui.theme": "light" },
+    "enforce": { "plugins.local.formats": "deny" }
+  }
+}
