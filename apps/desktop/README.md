@@ -4,7 +4,7 @@ Electron の殻です。Web アプリ（`apps/web`）の standalone ビルドを
 
 ## 方式とバージョン
 
-Electron の版は、`apps/desktop/package.json` で `^45.3.0` を指定しています（導入済みの npm パッケージは 45.3.2）。サーバーは Electron に同梱の Node で動くので、その Node が `node:sqlite` に必要な 22.13 以上である必要があります。同梱の Node の版は、確かめていません（Electron を実行していません）。
+Electron の版は、`apps/desktop/package.json` で 45.3.2 に固定しています（範囲で書くと、electron-builder が版を決められずに止まります）。サーバーは Electron に同梱の Node で動くので、その Node が `node:sqlite` に必要な 22.13 以上である必要があります。Electron 45.3.2 に同梱の Node は 24.22.2 で、`node:sqlite` が読み込めます（配布物の実行ファイルで確かめました）。
 
 サーバーは Electron 自身の Node（`ELECTRON_RUN_AS_NODE=1`）で、`resources/watchdog.cjs` を `--require` して `launch.mjs` を起動します。`launch.mjs` は `server.js` を同じプロセスに読み込むので、子プロセスは 1 つです。親が強制終了すると標準入力が閉じ、watchdog がそのプロセスを終わらせます。
 
@@ -34,11 +34,25 @@ npm run start:desktop  # electron .（フォルダを引数に渡すと、その
 npm run build:web && npm run dist:desktop
 ```
 
-`scripts/stage-server.mjs` が `apps/web/.next/standalone`（`launch.mjs` と静的ファイルがあること）を `build/server` にコピーし、`node_modules` のシンボリックリンクを実体にします。これが `extraResources` として `resources/server` に入ります。出力先は `apps/desktop/release/` です。対象は Windows（nsis、zip、dir）、macOS（dmg）、Linux（AppImage）です。
+`scripts/stage-server.mjs` が `apps/web/.next/standalone`（`launch.mjs` と静的ファイルがあること）を `build/server` にコピーし、`node_modules` のシンボリックリンクを実体にします。梱包の最後に、`scripts/after-pack.cjs`（electron-builder の `afterPack`）が `build/server` を配布物の `resources/server` にコピーします。`extraResources` に任せると、electron-builder が `node_modules` のフォルダを落とし、サーバーが起動しない配布物になるためです。コピーのあとで、起動とプラグインの読み込みに要るファイル（`next`、`react`、`jiti`、`@loc-studio/sdk` など）がそろっているかを確かめ、欠けていたら配布物を作らずに失敗します。
+
+出力先は `apps/desktop/release/` です。対象は Windows（nsis、zip、dir）、macOS（dmg）、Linux（AppImage）です。署名の設定はしていないので、配布物は署名なしです。アプリのアイコンも設定していないので、Electron の既定のアイコンになります。
+
+できた配布物は、次のコマンドで起動して確かめます。展開済みのフォルダ（Windows は `release/win-unpacked`）を一時フォルダに写して起動し、プラグインを後から置いて読み込まれることまでを見ます。画面を表示できる環境が要ります。
+
+```
+npm run check:desktop
+```
 
 ## プラグインフォルダ
 
-配布物の隣の `plugins` フォルダです。なければ起動時に作ります（作れない場所でも続行します）。「ヘルプ > プラグインフォルダを開く」でも開けます。再ビルドは要りません。
+プラグインは、配布物を作り直さずに足せます。プラグインのファイル（`.ts` のままで構いません）をプラグインフォルダに置き、画面の「プラグイン」の一覧で「再読み込み」を押すと読み込まれます。アプリを起動し直しても読み込みます。置き場所は次の 3 つです（[docs/plugins/loading.md](../../docs/plugins/loading.md)）。
+
+- アプリの隣の `plugins` フォルダ（下の表）。その PC でこのアプリが開くすべてのプロジェクトに効きます。信頼の確認なしで読み込みます。
+- プロジェクトの `loc-studio-plugins/`。プロジェクトと一緒に共有できます。初めて読み込むときと、書き換えたあとに、信頼の確認が出ます。
+- 個人の設定フォルダの `plugins`。その人の PC だけで使われます。同じく信頼の確認が出ます。
+
+アプリの隣の `plugins` フォルダは、なければ起動時に作ります（作れない場所でも続行します）。「ヘルプ > プラグインフォルダを開く」でも開けます。インストーラーで入れたアプリを更新、アンインストールしたときに、このフォルダの中身が残るかは確かめていません。消えて困るプラグインは、プロジェクトのフォルダか、個人の設定フォルダに置いてください。
 
 | OS | 場所 |
 | --- | --- |
@@ -54,17 +68,28 @@ npm run build:web && npm run dist:desktop
 実行して確認したことは次のとおりです。
 
 - `npx tsc -p apps/desktop` が通ります。
-- `npx vitest run apps/desktop` が通ります（9 ファイル、36 件。2026-11-15 にリポジトリのコピーで実行）。空きポート、appDir、環境変数の許可リスト、トークンの生成、起動待ち、URL、メニュー、トークンの置き換え、watchdog を調べています。
-- この 36 件には、standalone の `launch.mjs` を実際に起動する結合テストも入っています。合言葉なしの `/api/session` は 401、間違った合言葉も 401、正しい合言葉はクッキーに換わって 303 で URL から消えます。そのクッキーでは 200 です。親の環境の `LOC_STUDIO_MODE=web`、`LOC_STUDIO_HOST=0.0.0.0` は子プロセスに届かず、出力に合言葉は残りません。停止後はポートが閉じます。
-- `scripts/stage-server.mjs` が `launch.mjs` を含めてコピーし、シンボリックリンクが残らないことを確認しました。
+- `npx vitest run apps/desktop` が通ります。空きポート、appDir、環境変数の許可リスト、トークンの生成、起動待ち、URL、メニュー、トークンの置き換え、watchdog、配布物へのサーバーのコピー（`after-pack.cjs`）を調べています。
+- このテストには、standalone の `launch.mjs` を実際に起動する結合テストも入っています。合言葉なしの `/api/session` は 401、間違った合言葉も 401、正しい合言葉はクッキーに換わって 303 で URL から消えます。そのクッキーでは 200 です。親の環境の `LOC_STUDIO_MODE=web`、`LOC_STUDIO_HOST=0.0.0.0` は子プロセスに届かず、出力に合言葉は残りません。停止後はポートが閉じます。
+- 2026-11-16 に Windows 11（x64）で、`npm run build:web` と `npm run dist:desktop` が通り、インストーラー（`loc-studio Setup 0.1.0.exe`）、zip、展開済みのフォルダ（`win-unpacked`）ができました。zip の中に `resources/server/node_modules`（`next`、`jiti`、`@loc-studio/sdk`）が入っていることを確かめました。
+- 同じ日に `npm run check:desktop`（19 項目）を実行し、すべて通りました。展開済みのフォルダの写しを起動して、次を確かめています。
+  - 内部サーバーが起動し、ウィンドウにページが出て、合言葉が URL から消えている。
+  - 開いた直後は設定ファイルの信頼の確認を待ち、信頼するとプロジェクトが開く。
+  - プロジェクトのプラグインフォルダの TypeScript のプラグインが読み込まれる。
+  - アプリの隣の `plugins` と、個人の設定フォルダの `plugins` を探す対象にしている。アプリの隣の `plugins` は起動時に作ってある。
+  - アプリを動かしたまま、アプリの隣の `plugins` に TypeScript のプラグイン（`@loc-studio/sdk` を実行時に import するもの）を置いて再読み込みすると、信頼の確認なしで読み込まれ、設定の「登録されていない」の警告が消え、そのバリデータの指摘が行に出る。
+  - 信頼したあとの画面に、プロジェクトのツリーが出る。
+  - 個人の設定を、`--user-data-dir` で指定した設定フォルダに書く。
+  - ウィンドウを閉じるとアプリが終了し、内部サーバーにつながらなくなる。
 
 コードを読んで確認しただけのことは次のとおりです。
 
-- `launch.mjs` が `server.js` を同じプロセスに読み込むこと（orphan が出ない根拠）。
+- `launch.mjs` が `server.js` を同じプロセスに読み込むこと。
 - `main.ts` のナビゲーション制限、`window.open`、権限、`will-attach-webview` の処理。
 
 ## 確認していないこと
 
-- Electron の起動。実行ファイルを取得できて画面のある環境で試していません。ウィンドウ、メニュー、IPC、フォルダ選択、外部リンク、単一インスタンス、エラーダイアログは動かしていません。
-- Electron の Node（`ELECTRON_RUN_AS_NODE`）での `node:sqlite` の動作。
-- electron-builder の実行。各 OS の配布物、`extraResources` に `node_modules` が入ること、署名、配布版での appDir の解決は未確認です。
+- インストーラー（nsis）の実行。インストール、更新、アンインストールと、そのときにアプリの隣の `plugins` フォルダが残るかは試していません。
+- 手での操作。メニュー、フォルダ選択、外部リンク、2 つ目の起動、エラーダイアログ、「プラグインフォルダを開く」は動かしていません。`check:desktop` は、ページの中から API を呼んで確かめています。
+- 署名。配布物は署名なしです。
+- macOS（dmg）と Linux（AppImage）の配布物の作成と起動。
+- 親プロセスを強制終了したときに、watchdog が内部サーバーを止めること（配布物では試していません。テストは watchdog のスクリプトを単独で調べています）。

@@ -262,11 +262,12 @@ npm run start:desktop   # electron .  （フォルダを引数に渡すと、そ
 - プロジェクトの指定は、コマンドライン引数、なければ前回開いたプロジェクトです。メニュー「ファイル > プロジェクトを開く…」（Ctrl+O）は、選んだフォルダのパスを `?project=` に付けて、画面を読み込み直します。画面は `?project=` の値を「プロジェクトを開く」の入力欄に入れるだけなので、コードの上では、「開く」を押すまで開きません。起動時にプロジェクトを指定していた場合は、読み込み直しで、起動時のプロジェクトが開き直ります。
 - 個人の設定フォルダは Electron の `userData` です（メニュー「ヘルプ > 設定フォルダを開く」）。
 - アプリ層のプラグインフォルダは、配布物の隣の `plugins` です（メニュー「ヘルプ > プラグインフォルダを開く」）。開発時は `apps/desktop/plugins` です。
-- 配布物の作成は `npm run build:web && npm run dist:desktop` です。
+- 配布物の作成は `npm run build:web && npm run dist:desktop` です。できた配布物は `npm run check:desktop` で起動して確かめられます。
+- プラグインは、配布物を作り直さずに足せます。プラグインのファイルをプラグインフォルダに置き、画面の「プラグイン」の一覧で「再読み込み」を押します（アプリを起動し直しても読み込みます）。置き場所は、アプリの隣の `plugins`、プロジェクトの `loc-studio-plugins/`、個人の設定フォルダの `plugins` の 3 つです（[plugins/loading.md](plugins/loading.md)）。
 
-`apps/desktop/package.json` は Electron `^45.3.0` を指定しています。同梱の Node の版（`node:sqlite` には 22.13 以上が要ります）は確かめていません。
+`apps/desktop/package.json` は Electron 45.3.2 を指定しています。同梱の Node は 24.22.2 で、`node:sqlite`（22.13 以上が要ります）が動きます。
 
-Electron の実行ファイルを取得できる環境で試していないため、Electron の起動、ウィンドウ、メニュー、フォルダ選択、`ELECTRON_RUN_AS_NODE` での `node:sqlite` の動作、electron-builder による配布物の作成（署名を含む）は、一度も実行していません。確認できているのは、`tsc` が通ることと、`apps/desktop` のテスト（空きポート、パスの解決、環境変数の許可リストとコマンドの組み立て、起動待ち、メニュー、standalone の `launch.mjs` を実際に起動して合言葉の扱いを確かめるテスト）です。詳しくは [apps/desktop/README.md](../apps/desktop/README.md) にあります。
+2026-11-16 に Windows 11 で、配布物を作り、展開済みのフォルダの写しを起動して確かめました（`npm run check:desktop`）。インストーラーの実行、メニュー、フォルダの選択、署名、macOS と Linux の配布物は確かめていません。確かめた範囲は [apps/desktop/README.md](../apps/desktop/README.md) にあります。
 
 ## 5. プロジェクトを一から作る
 

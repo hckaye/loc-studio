@@ -12,11 +12,12 @@
 | 時間の予算を見るテスト | `npm run test:perf` |
 | 画面を本物のブラウザで操作して確かめる | `npm run build:web` のあと `npm run check:browser`（Chrome / Edge が要る） |
 | 画面の本番ビルドのサーバーを API で確かめる | `npm run build:web` のあと `npm run smoke:web` |
+| デスクトップ版の配布物を作って、起動して確かめる | `npm run build:web` のあと `npm run dist:desktop`、`npm run check:desktop`（画面を表示できる環境が要る） |
 | テストが退行を見つけるかの確認 | `npm run test:mutation -- scripts/mutations/<名前>.mjs`（[scripts/mutation-check.mjs](scripts/mutation-check.mjs)） |
 
 Postgres を使うテストは、環境変数 `LOC_STUDIO_TEST_PG_URL` に接続先を入れると走ります（なければ飛ばします）。Docker があれば、`docker run -d --rm -e POSTGRES_PASSWORD=<パスワード> -p 127.0.0.1::5432 postgres:16-alpine` で使い捨てのサーバーを用意できます。自分で起動したコンテナは、終わったら自分で止めます。
 
-変更を終える前に、`npm run typecheck` と `npm test` の両方を通します。画面を変えたら、`npm run check:browser` も通します。テストのファイルも型を確かめる対象です（`tsconfig.test.json`）。以前はテストが型の確認から外れていて、引数の足りない呼び出しが残ったまま通っていました。
+変更を終える前に、`npm run typecheck` と `npm test` の両方を通します。画面を変えたら、`npm run check:browser` も通します。デスクトップ版（`apps/desktop`）や、サーバーに入るパッケージの構成を変えたら、配布物を作り直して `npm run check:desktop` も通します。テストのファイルも型を確かめる対象です（`tsconfig.test.json`）。以前はテストが型の確認から外れていて、引数の足りない呼び出しが残ったまま通っていました。
 
 ## スタジオごとに違うものを、アプリのコードに決め打ちしない
 

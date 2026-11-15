@@ -23,7 +23,8 @@ export default defineConfig({
           name: "node",
           include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
           // *.perf.test.ts は時間の予算を見るテスト。並べて走らせると結果がぶれるので、`npm run test:perf` で単独に走らせる。
-          exclude: ["**/node_modules/**", "apps/web/**", "**/*.perf.test.ts"],
+          // apps/desktop/build と release は梱包の出力で、サーバーに入るパッケージの写し（テストのファイルも入る）がある。
+          exclude: ["**/node_modules/**", "apps/web/**", "apps/desktop/build/**", "apps/desktop/release/**", "**/*.perf.test.ts"],
         },
       },
       {

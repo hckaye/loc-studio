@@ -13,7 +13,7 @@ export default mergeConfig(
       testTimeout: 180_000,
       include: ["packages/**/*.perf.test.ts", "apps/**/*.perf.test.ts"],
       // 画面のビルド（.next/standalone）は、ソースの写しを含む。写しのテストは拾わない。
-      exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**"],
+      exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**", "apps/desktop/build/**", "apps/desktop/release/**"],
       fileParallelism: false,
     },
   }),

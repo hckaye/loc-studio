@@ -13,7 +13,7 @@
     "dist:dir": "npm run build && npm run stage && electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "^45.3.0",
+    "electron": "45.3.2",
     "electron-builder": "^26.0.0"
   },
   "build": {
@@ -23,9 +23,9 @@
     "files": ["dist/**/*", "package.json"],
     "asar": true,
     "extraResources": [
-      { "from": "build/server", "to": "server", "filter": ["**/*", "**/node_modules/**"] },
       { "from": "resources/watchdog.cjs", "to": "watchdog.cjs" }
     ],
+    "afterPack": "scripts/after-pack.cjs",
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] },
