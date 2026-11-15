@@ -1,9 +1,17 @@
-import type { HostDb, PluginHost, SecretReader } from "@loc-studio/sdk";
+import type { HostDb, PluginHost, ProjectReader, SecretReader } from "@loc-studio/sdk";
+import { unavailableProjectReader } from "./project-reader.js";
 
 export interface CreatePluginHostInput {
   db: HostDb;
   /** いまの利用者名。設定の変更が反映されるよう、使うたびに呼ぶ。 */
   userName: () => string;
+  /** いまの利用者の役割の ID（Web モード）。省略時は役割なし。 */
+  userRole?: () => string | undefined;
+  /**
+   * プロジェクトのリソースと行を読む窓口（createProjectReader で作る）。
+   * 省略時は、使おうとすると例外になる窓口（プロジェクトにつながっていないホスト）。
+   */
+  project?: ProjectReader;
   projectRoot: string;
   /** 省略時は process.env。 */
   env?: Record<string, string | undefined>;
@@ -40,6 +48,7 @@ export function createPluginHost(input: CreatePluginHostInput): PluginHost {
   const doFetch: typeof fetch = input.fetch ?? ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args));
   const log = input.log ?? ((message: string) => console.error(message));
   const userName = input.userName;
+  const userRole = input.userRole;
   return {
     db: input.db,
     // ローカル設定でユーザー名を変えたらすぐ反映されるよう、読むたびに求める。
@@ -47,10 +56,14 @@ export function createPluginHost(input: CreatePluginHostInput): PluginHost {
       get name() {
         return userName();
       },
+      get role() {
+        return userRole?.();
+      },
     },
     secrets,
     env,
     projectRoot: input.projectRoot,
+    project: input.project ?? unavailableProjectReader(),
     fetch: doFetch,
     log,
   };

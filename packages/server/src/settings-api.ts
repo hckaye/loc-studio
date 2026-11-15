@@ -159,9 +159,10 @@ async function writeAtomic(file: string, text: string): Promise<void> {
  * Web モードで、プロジェクトの manager が変えてよい設定の項目。
  * これ以外（基盤の項目）はサーバーの管理者だけが変えられる。サーバーの秘密やほかのデータベース、任意のフォルダのコードに
  * 届かないようにするため（storage、pluginDirs、tree、formats、syntaxes、sources、generators、actions、review）。
+ * 役割の定義（roles）も管理者だけが変えられる。manage の権限がある人が、自分の役割の絞り込みを外せないようにするため。
  */
-export const MANAGER_CONFIG_KEYS = ["name", "languages", "columns", "validators", "validation", "languageSets", "grid", "localSettings"] as const;
-export const ADMIN_CONFIG_KEYS = INFRA_CONFIG_KEYS;
+export const MANAGER_CONFIG_KEYS = ["name", "languages", "columns", "validators", "validation", "languageSets", "grid", "editor", "localSettings"] as const;
+export const ADMIN_CONFIG_KEYS = [...INFRA_CONFIG_KEYS, "roles"] as const;
 
 // ProjectConfig の項目を足したら、どちらかの一覧に入れないと型の確認で失敗する。
 type UnlistedConfigKeys = Exclude<keyof ProjectConfig, (typeof MANAGER_CONFIG_KEYS)[number] | (typeof ADMIN_CONFIG_KEYS)[number]>;

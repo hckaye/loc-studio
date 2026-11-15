@@ -36,7 +36,8 @@ import { SearchDialog } from "@/components/SearchDialog";
 import { PluginTrustDialog } from "@/components/PluginTrustDialog";
 import { defaultRendererLoader, RendererProvider, type RendererLoader } from "@/components/grid/renderers";
 import { UserMenu } from "@/components/web/UserMenu";
-import { canEdit, canRun, ROLE_LABEL } from "@/lib/client/permissions";
+import { canEdit, canRun, canStructure, roleLabel } from "@/lib/client/permissions";
+import { StructureDialog, type StructureRequest } from "@/components/StructureDialog";
 import { openExternal } from "@/lib/client/url";
 
 /* メイン画面: 上のバー、左のツリー、右のツールバーと表、下のステータスバー、各種ダイアログ。 */
@@ -195,22 +196,38 @@ function StudioInner({
 
   // ---- 行
   const [filters, setFilters] = useState<ToolbarFilters>(EMPTY_FILTERS);
+  // 並べ替え。リソースを切り替えたら、リソースの中の順に戻す。
+  const [sort, setSort] = useState<{ cellId: string; dir: "asc" | "desc" } | null>(null);
+  useEffect(() => setSort(null), [resourceId]);
+  /** 列見出しを押すたびに、昇順、降順、解除の順に切り替える。 */
+  const toggleSort = useCallback((gc: GridColumn) => {
+    setSort((cur) => (cur?.cellId !== gc.cellId ? { cellId: gc.cellId, dir: "asc" } : cur.dir === "asc" ? { cellId: gc.cellId, dir: "desc" } : null));
+  }, []);
   const query: RowQuery | null = useMemo(() => {
     if (!resourceId) return null;
-    const vf = Object.entries(filters.values)
-      .filter(([cellId, vals]) => vals.length > 0 && (!cellId.includes("@") || visibleLanguages.includes(cellId.split("@")[1]!)))
-      .map(([cellId, values]) => ({ cellId, values }));
+    // 表示していない言語の列の条件は送らない。
+    const shown = (cellId: string): boolean => !cellId.includes("@") || visibleLanguages.includes(cellId.split("@")[1]!);
+    const vf: { cellId: string; values?: string[]; contains?: string }[] = [
+      ...Object.entries(filters.values)
+        .filter(([cellId, vals]) => vals.length > 0 && shown(cellId))
+        .map(([cellId, values]) => ({ cellId, values })),
+      ...Object.entries(filters.contains)
+        .filter(([cellId, text]) => text !== "" && shown(cellId))
+        .map(([cellId, contains]) => ({ cellId, contains })),
+    ];
     return {
       resourceId,
       languages: visibleLanguages,
       ...(filters.search.trim() ? { search: filters.search.trim() } : {}),
       ...(vf.length ? { filters: vf } : {}),
       ...(filters.onlyUntranslated ? { onlyUntranslated: true } : {}),
-      ...(filters.onlyIssues ? { onlyIssues: "warning" as const } : {}),
+      ...(filters.onlyIssues ? { onlyIssues: filters.issueLevel } : {}),
       ...(filters.onlyStale ? { onlyStale: true } : {}),
       ...(filters.onlyUnsaved ? { onlyUnsaved: true } : {}),
+      // 表示していない言語の列での並べ替えは外す。
+      ...(sort && shown(sort.cellId) ? { sort } : {}),
     };
-  }, [resourceId, visibleLanguages, filters]);
+  }, [resourceId, visibleLanguages, filters, sort]);
   const onRowsError = useCallback((err: unknown) => reportError(err, "行の読み込み"), [reportError]);
   const rows = useRowPages(api, query, onRowsError);
 
@@ -282,11 +299,12 @@ function StudioInner({
   const [saveConflicts, setSaveConflicts] = useState<SaveConflict[] | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [confirmDiscardAll, setConfirmDiscardAll] = useState(false);
+  const [structure, setStructure] = useState<StructureRequest | null>(null);
   // 信頼していないプラグインがあれば、開いたときに最初に確認する
   // Web モードではプラグインの確認は出さない（置いたのは管理者）
   const [trustOpen, setTrustOpen] = useState(!web && info.untrustedPlugins > 0);
   const anyDialog =
-    edit || review || conflict || langPicker || settingsOpen || pluginsOpen || problemsOpen || generate || saveConflicts || searchOpen || confirmDiscardAll || trustOpen;
+    edit || review || conflict || langPicker || settingsOpen || pluginsOpen || problemsOpen || generate || saveConflicts || searchOpen || confirmDiscardAll || structure || trustOpen;
 
   const onJobFinished = useCallback(
     (job: JobInfo) => {
@@ -621,7 +639,7 @@ function StudioInner({
         )}
         {web && info.permissions && (
           <span className="badge" title={info.permissions.languages ? `担当の言語: ${info.permissions.languages.join(", ")}` : "すべての言語"}>
-            {ROLE_LABEL[info.permissions.role] ?? info.permissions.role}
+            {roleLabel(info)}
             {info.permissions.languages ? `（${info.permissions.languages.join(", ")}）` : ""}
           </span>
         )}
@@ -664,7 +682,15 @@ function StudioInner({
         </div>
       )}
       <div className="main">
-        <ResourceTree nodes={tree} selected={resourceId} onSelect={setResourceId} statsToken={statsToken} onError={(err) => reportError(err, "進捗の読み込み")} />
+        <ResourceTree
+          nodes={tree}
+          selected={resourceId}
+          onSelect={setResourceId}
+          statsToken={statsToken}
+          onError={(err) => reportError(err, "進捗の読み込み")}
+          onCreate={() => setStructure({ kind: "resource", ...(resourceId ? { near: resourceId } : {}) })}
+          createDisabledReason={canStructure(info).reason}
+        />
         <section className="content" aria-label="表">
           <Toolbar
             columns={info.columns}
@@ -684,6 +710,20 @@ function StudioInner({
             onFileAction={(a) => void runAction(a, [])}
             onReload={() => void reload()}
             onDiscardAll={() => setConfirmDiscardAll(true)}
+            {...(resourceId
+              ? {
+                  onStructure: async (kind: "add" | "rename" | "remove") => {
+                    // 対象は選択中の行（追加は選択の最後の行の後ろ。行がなければ末尾）。
+                    const keys = rows.total > 0 ? await selectedKeys() : [];
+                    if (kind === "add") setStructure({ kind, resourceId, ...(keys.length > 0 ? { after: keys[keys.length - 1]! } : {}) });
+                    else if (keys.length === 0) push("info", "行を選んでから実行してください");
+                    else if (kind === "remove") setStructure({ kind, resourceId, keys });
+                    else if (keys.length > 1) push("info", "キーを変える行を 1 つだけ選んでください");
+                    else setStructure({ kind, resourceId, key: keys[0]! });
+                  },
+                }
+              : {})}
+            structureDisabledReason={canStructure(info).reason}
             editDisabledReason={canEdit(info).reason}
             runDisabledReason={canRun(info).reason}
           />
@@ -720,6 +760,8 @@ function StudioInner({
                 layout={layout}
                 rows={rows}
                 density={density}
+                sort={sort ?? undefined}
+                onSort={toggleSort}
                 selection={selection}
                 onSelectionChange={setSelection}
                 onOpenEditor={(rowIndex, gc) => setEdit({ rowIndex, gc })}
@@ -894,6 +936,18 @@ function StudioInner({
         />
       )}
       {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onJump={jumpTo} resourceNames={resourceNames} />}
+      {structure && (
+        <StructureDialog
+          request={structure}
+          onClose={() => setStructure(null)}
+          onDone={({ message, created }) => {
+            setStructure(null);
+            push("success", message);
+            refreshAll();
+            if (created) setResourceId(created.id);
+          }}
+        />
+      )}
       {confirmDiscardAll && resourceId && (
         <Dialog
           title="未保存の変更をすべて取り消しますか？"

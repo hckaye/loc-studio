@@ -26,6 +26,7 @@ import { textHash } from "./hash.js";
 import { JobManager, JOBS_LOG_NS } from "./jobs.js";
 import { KeyedMutex } from "./mutex.js";
 import { currentCall, currentCallState } from "./call-context.js";
+import { resourceVisible } from "./permissions.js";
 
 export const HISTORY_NS = "core.history";
 export const TEXT_VERSIONS_NS = "core.text-versions";
@@ -33,6 +34,8 @@ export const TEXT_BASIS_NS = "core.text-basis";
 export const GENERATED_NS = "core.generated";
 export const GENERATED_CELLS_NS = "core.generated-cells";
 export const REVIEW_FORWARDS_NS = "core.review-forwards";
+/** リソースごとの「安定 ID → キー」（kv。キーの変更に追従するために覚えておく）。 */
+export const STABLE_KEYS_NS = "core.stable-keys";
 
 export interface HistoryData {
   oldValue: unknown;
@@ -98,6 +101,10 @@ export class WsContext {
   localSeq = 0;
   /** 設定・プラグインを読み直すたびに増える。 */
   configGen = 0;
+  /** 列ソースが外部の変更を知らせる（ColumnSource.subscribe）たびに増える。統計などのキャッシュの鍵に入れる。 */
+  sourceSeq = 0;
+  /** 始めた監視（ツリーの watch、列ソースの subscribe）をやめる関数。 */
+  private watchers: (() => void)[] = [];
 
   private columnsCache?: { gen: number; columns: ColumnDef[]; byId: Map<string, ColumnDef> };
   private sourceCache = new Map<string, ResolvedColumnSource | undefined>();
@@ -117,7 +124,7 @@ export class WsContext {
     this.storageShared = init.storageShared;
     if (init.userSettings) this.userSettings = init.userSettings;
     this.promptTrust = init.promptTrust === true;
-    this.docs = new DocumentCache(() => this.project, init.revisionCheckIntervalMs);
+    this.docs = new DocumentCache(() => this.project, init.revisionCheckIntervalMs, (r) => resourceVisible(r.path));
     this.drafts = new DraftStore(this.local.cells(DRAFTS_NS), () => this.textColumn()?.id);
     this.jobs = new JobManager(
       () => this.shared.log<JobInfo>(JOBS_LOG_NS),
@@ -188,6 +195,53 @@ export class WsContext {
     this.sourceCache = new Map();
     this.docs.clear();
     await this.drafts.load();
+    this.startWatching();
+  }
+
+  /**
+   * 外部の変更の監視を始める（すでに始めていれば、やめてから始め直す）。
+   * ツリーが知らせたリソースは読み直し、列ソースが知らせたら画面に変更を伝える。実装のないツリーや列ソースでは何もしない。
+   */
+  startWatching(): void {
+    this.stopWatching();
+    const begin = (what: string, start: () => (() => void) | undefined): void => {
+      try {
+        const stop = start();
+        if (typeof stop === "function") this.watchers.push(stop);
+      } catch (err) {
+        this.warn(`${what}の変更の監視を始められませんでした: ${errorText(err)}`);
+      }
+    };
+    begin("リソース", () =>
+      this.project.watchResources((resource) => {
+        if (resource && typeof resource.id === "string") this.docs.invalidate(resource.id);
+        this.bump();
+      }),
+    );
+    const seen = new Set<string>();
+    for (const column of this.columns()) {
+      const resolved = this.columnSource(column);
+      if (!resolved || seen.has(resolved.name)) continue;
+      seen.add(resolved.name);
+      const { source } = resolved;
+      if (typeof source.subscribe !== "function") continue;
+      begin(`列ソース "${resolved.name}" `, () =>
+        source.subscribe!(this.project.sourceContext(resolved), () => {
+          this.sourceSeq++;
+          this.bump();
+        }),
+      );
+    }
+  }
+
+  stopWatching(): void {
+    for (const stop of this.watchers.splice(0)) {
+      try {
+        stop();
+      } catch (err) {
+        this.project.host.log(`変更の監視をやめる処理が失敗しました: ${errorText(err)}`);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -347,6 +401,17 @@ export class WsContext {
   async appendHistory(entries: { cell: CellRef; data: HistoryData }[]): Promise<void> {
     if (entries.length === 0) return;
     await this.shared.log<HistoryData>(HISTORY_NS).append(entries);
+  }
+
+  /** 進捗の数え方（設定の grid.progressUnit。知らない値は行数）。 */
+  progressUnit(): "rows" | "characters" | "words" {
+    const unit = this.project.config.grid?.progressUnit;
+    return unit === "characters" || unit === "words" ? unit : "rows";
+  }
+
+  /** 基になる言語の本文が変わったら「要確認」の印を付けるか（設定の validation.recheck。既定は付ける）。 */
+  recheckEnabled(): boolean {
+    return this.project.config.validation?.recheck !== false;
   }
 
   /** history: false の列は履歴に残さない。 */

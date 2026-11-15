@@ -12,6 +12,10 @@ export interface ResourceTreeProps {
   onSelect(resourceId: string): void;
   statsToken: number;
   onError(err: unknown): void;
+  /** リソースの作成を始める（渡したときだけボタンを出す）。 */
+  onCreate?(): void;
+  /** リソースを作れないときの理由。 */
+  createDisabledReason?: string | undefined;
 }
 
 function collectResources(nodes: TreeNodeInfo[], out: string[] = []): string[] {
@@ -34,7 +38,7 @@ function filterTree(nodes: TreeNodeInfo[], q: string): TreeNodeInfo[] {
   return out;
 }
 
-export function ResourceTree({ nodes, selected, onSelect, statsToken, onError }: ResourceTreeProps) {
+export function ResourceTree({ nodes, selected, onSelect, statsToken, onError, onCreate, createDisabledReason }: ResourceTreeProps) {
   const { api, info } = useStudio();
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -110,7 +114,7 @@ export function ResourceTree({ nodes, selected, onSelect, statsToken, onError }:
               </span>
               <span className="tree-name">{n.name}</span>
               {n.unsaved ? <span className="tree-unsaved" title={`未保存 ${n.unsaved} 件`}>●{n.unsaved}</span> : null}
-              {p && <Progress p={p} />}
+              {p && <Progress p={p} unit={info.grid.progressUnit} />}
             </button>
             {!isCollapsed && n.children && (
               <ul role="group" className="tree-list">
@@ -143,7 +147,7 @@ export function ResourceTree({ nodes, selected, onSelect, statsToken, onError }:
                 !{st.issues.error}
               </span>
             )}
-            {p && <Progress p={p} />}
+            {p && <Progress p={p} unit={info.grid.progressUnit} />}
           </button>
         </li>
       );
@@ -152,7 +156,14 @@ export function ResourceTree({ nodes, selected, onSelect, statsToken, onError }:
   return (
     <nav className="tree" aria-label="リソース">
       <div className="tree-head">
-        <input type="search" className="input" placeholder="名前で絞り込む" aria-label="リソースを名前で絞り込む" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <div className="row">
+          <input type="search" className="input grow" placeholder="名前で絞り込む" aria-label="リソースを名前で絞り込む" value={query} onChange={(e) => setQuery(e.target.value)} />
+          {onCreate && (
+            <button type="button" className="btn small" aria-label="リソースを作成" title={createDisabledReason ?? "リソースを作成"} disabled={createDisabledReason !== undefined} onClick={onCreate}>
+              ＋
+            </button>
+          )}
+        </div>
         {col && <div className="muted small tree-legend">進捗: {col.label ?? col.id}</div>}
       </div>
       <ul className="tree-list root" role="tree" aria-label="リソースのツリー">
@@ -171,9 +182,12 @@ interface ProgressSummary {
 
 const percent = (c: number, t: number) => (t === 0 ? 0 : Math.round((c / t) * 100));
 
-function Progress({ p }: { p: ProgressSummary }) {
+/** 進捗を数えている単位（設定の grid.progressUnit）。数は、行数か、原文の文字数・語数。 */
+const UNIT_LABEL: Record<"rows" | "characters" | "words", string> = { rows: "行", characters: "文字（原文）", words: "語（原文）" };
+
+function Progress({ p, unit }: { p: ProgressSummary; unit: "rows" | "characters" | "words" }) {
   const pct = percent(p.complete, p.total);
-  const title = [`合計 ${p.complete} / ${p.total}（${pct}%）`, ...p.perLanguage.map((l) => `${l.label}: ${l.complete} / ${l.total}（${percent(l.complete, l.total)}%）`)].join("\n");
+  const title = [`合計 ${p.complete} / ${p.total} ${UNIT_LABEL[unit]}（${pct}%）`, ...p.perLanguage.map((l) => `${l.label}: ${l.complete} / ${l.total}（${percent(l.complete, l.total)}%）`)].join("\n");
   return (
     <span className="tree-progress" title={title} aria-label={`進捗 ${pct}%`}>
       <span className="bar">

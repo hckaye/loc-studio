@@ -358,7 +358,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       return apiErrorCode(err) ?? 1;
     }
   }
-  if (["generate", "run", "status", "save", "set"].includes(opts.command)) {
+  if (["generate", "run", "status", "save", "set", "entry", "resource"].includes(opts.command)) {
     try {
       return await runBatchCommand(opts, io);
     } catch (err) {

@@ -823,8 +823,9 @@ describe("乱択: set の後に読み戻すと、変えた値だけが変わっ�
 // 性能
 // ---------------------------------------------------------------------------
 
-describe("性能", () => {
-  it("50,000 行 × 6 列の解析と、数件の set が十分に速い", () => {
+// 速さ（時間の予算）は csv.perf.test.ts で、単独で走らせて確かめる（`npm run test:perf`）。ここでは大きなファイルでの正しさだけを見る。
+describe("大きなファイル", () => {
+  it("50,000 行 × 6 列を解析でき、離れた行への変更・追加・削除が正しく入る", () => {
     const languages = langs("ja", "en", "fr", "de", "zh");
     const c = ctx({}, languages);
     const parts: string[] = ["key,ja,en,fr,de,zh\n"];
@@ -833,9 +834,7 @@ describe("性能", () => {
     }
     const input = enc(parts.join(""));
 
-    const t0 = performance.now();
     const doc = csvFormat.parse(input, c);
-    const t1 = performance.now();
     expect(doc.entries).toHaveLength(50_000);
     expect(doc.entries[49_999]?.text.ja).toBe('日本語の本文 49999, 引用符 "');
 
@@ -844,15 +843,17 @@ describe("性能", () => {
     changes.push({ type: "add", after: "key_100", entry: { key: "new", text: { ja: "新" } } });
     changes.push({ type: "remove", key: "key_200" });
     const out = csvFormat.apply(input, changes, c);
-    const t2 = performance.now();
-
-    expect(t1 - t0).toBeLessThan(5000);
-    expect(t2 - t1).toBeLessThan(5000);
     const reparsed = csvFormat.parse(out, c);
+    // 1 行足して 1 行消したので、行数は変わらない。
     expect(reparsed.entries).toHaveLength(50_000);
     expect(reparsed.entries.find((e) => e.key === "key_2500")?.text.en).toBe("changed 1");
+    expect(reparsed.entries.find((e) => e.key === "key_47500")?.text.en).toBe("changed 19");
+    expect(reparsed.entries[101]).toMatchObject({ key: "new", text: { ja: "新" } });
+    expect(reparsed.entries.some((e) => e.key === "key_200")).toBe(false);
+    // 触っていない行は変わらない。
+    expect(reparsed.entries.find((e) => e.key === "key_49999")?.text).toEqual(doc.entries[49_999]!.text);
   });
-  it("50,000 行に列を 1 つ足し、数件の値を入れるのが十分に速い", () => {
+  it("50,000 行に列を 1 つ足し、離れた行に値を入れられる", () => {
     const c = ctx({}, langs("ja", "en", "fr", "de", "zh", "ko"));
     const parts: string[] = ["key,ja,en,fr,de,zh\n"];
     for (let i = 0; i < 50_000; i++) parts.push(`key_${i},日本語 ${i},"English, ${i}",Français ${i},Deutsch ${i},中文 ${i}\n`);
@@ -861,13 +862,8 @@ describe("性能", () => {
     const changes: Change[] = [];
     for (let i = 0; i < 10; i++) changes.push(setText(`key_${i * 5000}`, "ko", `한국어 ${i}`));
     changes.push({ type: "rename", key: "key_1", newKey: "renamed" });
-    const t0 = performance.now();
     const out = csvFormat.apply(input, changes, c);
-    const t1 = performance.now();
     const doc = csvFormat.parse(out, c);
-    const t2 = performance.now();
-    console.log(`列の追加: apply ${(t1 - t0).toFixed(0)} ms、再解析 ${(t2 - t1).toFixed(0)} ms`);
-    expect(t1 - t0).toBeLessThan(5000);
     expect(doc.entries).toHaveLength(50_000);
     expect(doc.entries[5000]?.text.ko).toBe("한국어 1");
     expect(doc.entries[2]?.text.ko).toBe("");

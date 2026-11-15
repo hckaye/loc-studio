@@ -37,8 +37,15 @@ const config = (columns?: ProjectConfig["columns"], extra: Partial<ProjectConfig
 describe("resolveColumns", () => {
   it("省略時はキーと本文", () => {
     const { columns, warnings } = resolveColumns(config(), registry());
-    expect(columns).toEqual(DEFAULT_COLUMNS);
+    // 既定の列は、ここに書いたとおり（実装の定数と比べると、定数を誤って変えても気づけない）。
+    expect(columns).toEqual([
+      { id: "key", kind: "key", scope: "entry" },
+      { id: "text", kind: "text", scope: "language" },
+    ]);
     expect(columns).not.toBe(DEFAULT_COLUMNS);
+    // 返した列を書き換えても、既定の定義は変わらない。
+    columns[0]!.id = "changed";
+    expect(DEFAULT_COLUMNS[0]!.id).toBe("key");
     expect(warnings).toEqual([]);
   });
 

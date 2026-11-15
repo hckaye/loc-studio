@@ -7,9 +7,10 @@ import type {
   ResourceRef,
   RowReader,
 } from "@loc-studio/sdk";
+import { FILE_SOURCE } from "./columns.js";
 import type { Project } from "./project.js";
-import type { CellValidation, ValidationTarget } from "./types.js";
-import { runValidators } from "./validation.js";
+import type { CellValidation, ResolvedValidator, ValidationTarget } from "./types.js";
+import { cellValueText, runResourceValidators, runValidators, validatedMetaColumns } from "./validation.js";
 
 export interface ValidateScope {
   /** 対象の言語。省略時はプロジェクトの全言語。 */
@@ -33,7 +34,8 @@ function rowReader(data: EntryData): RowReader {
 
 /**
  * 1 つのリソースから、バリデーションの対象になるセルを作る。
- * いまは本文（kind: "text"）の列だけを対象にする。独自列は、列ソースの実装が入ってから加える。
+ * 対象は、本文（kind: "text"）の列と、バリデータが名指しした列のうちリソースの中に値がある列（出所 file）。
+ * 列ソースの列（ステータスなど）は、共有 DB を開くサービス層（画面と、CLI の status など）で確かめる。
  */
 export function buildValidationTargets(
   resource: ResourceRef,
@@ -41,10 +43,12 @@ export function buildValidationTargets(
   languages: LanguageDef[],
   columns: ColumnDef[],
   scope: ValidateScope = {},
+  validators: ResolvedValidator[] = [],
 ): ValidationTarget[] {
   const byId = new Map(languages.map((language) => [language.id, language]));
   const wanted = scope.languages ? new Set(scope.languages) : undefined;
   const textColumns = columns.filter((column) => column.kind === "text");
+  const fileColumns = validatedMetaColumns(columns, validators).filter((c) => c.source === undefined || c.source === FILE_SOURCE);
   const targets: ValidationTarget[] = [];
 
   for (const data of entries) {
@@ -70,6 +74,14 @@ export function buildValidationTargets(
         });
       }
     }
+    for (const column of fileColumns) {
+      for (const language of column.scope === "entry" ? [undefined] : languages) {
+        if (language && wanted && !wanted.has(language.id)) continue;
+        if (language && column.languages && !column.languages.includes(language.id)) continue;
+        const raw = language ? data.languageMeta?.[language.id]?.[column.id] : data.meta?.[column.id];
+        targets.push({ entry, column, ...(language ? { language } : {}), value: cellValueText(raw), ...(raw !== undefined && raw !== null ? { raw } : {}), row });
+      }
+    }
   }
   return targets;
 }
@@ -81,17 +93,38 @@ export async function validateResource(
   scope: ValidateScope = {},
 ): Promise<ResourceValidation> {
   const { document, format } = await project.readDocument(resource);
-  const targets = buildValidationTargets(
-    resource,
-    document.entries,
-    project.languages,
-    project.columns(),
-    scope,
-  );
-  const results = await runValidators(targets, project.resolveValidators(), {
+  const validators = project.resolveValidators();
+  const columns = project.columns();
+  const targets = buildValidationTargets(resource, document.entries, project.languages, columns, scope, validators);
+  const results = await runValidators(targets, validators, {
     tokenize: project.tokenizer(format),
     signal: scope.signal,
   });
+
+  // リソース全体を見るバリデータ。見つけた問題は、そのセルの結果に足す（対象になかったセルなら結果を足す）。
+  if (validators.some((rv) => typeof rv.validator.validateResource === "function")) {
+    const rows = await project.host.project.rows(resource.id);
+    const { issues, problems } = await runResourceValidators({ resource, rows, languages: project.languages, columns }, validators);
+    for (const p of problems) project.host.log(p);
+    const cellOf = (key: string, columnId: string, language: LanguageId | undefined): string => `${key}\u0000${columnId}\u0000${language ?? ""}`;
+    const byCell = new Map(results.map((r) => [cellOf(r.target.entry.key, r.target.column.id, r.target.language?.id), r]));
+    const wanted = scope.languages ? new Set(scope.languages) : undefined;
+    const rowOf = new Map(rows.map((r) => [r.entry.key, r]));
+    for (const { key, columnId, language, ...issue } of issues) {
+      if (language !== undefined && wanted && !wanted.has(language)) continue;
+      let cell = byCell.get(cellOf(key, columnId, language));
+      if (!cell) {
+        const column = columns.find((c) => c.id === columnId)!;
+        const snapshot = rowOf.get(key)!;
+        const languageDef = language !== undefined ? project.language(language) : undefined;
+        const raw = column.kind === "text" ? snapshot.row.text(language!) : snapshot.row.get(columnId, language);
+        cell = { target: { entry: snapshot.entry, column, ...(languageDef ? { language: languageDef } : {}), value: cellValueText(raw), row: snapshot.row }, issues: [] };
+        byCell.set(cellOf(key, columnId, language), cell);
+        results.push(cell);
+      }
+      cell.issues.push(issue);
+    }
+  }
   return { resource, results };
 }
 

@@ -25,12 +25,14 @@
 | --- | --- | --- | --- |
 | `cell` | 行ごとに 1 回 | `entry`、`row`、`column`、`value`（そのセルのいまの値。本文は未保存の編集を含む）、`language`（言語ごとの列のとき） | アクション列のボタン、複数行を選んだときのバー |
 | `row` | 行ごとに 1 回 | `entry`、`row`、`language`（指定されたとき） | アクション列のボタン、複数行を選んだときのバー |
-| `column` | 1 回だけ | `entries`（リソースの全行）、`column`、`language`（言語ごとの列のとき） | 列見出しの「⋮」メニュー |
-| `selection` | 1 回だけ | `entries`（選んだ行。行の指定がなければ全行） | 複数行を選んだときのバー |
-| `file` | 1 回だけ | `entries`（リソースの全行） | ツールバーの「アクション ▾」 |
+| `column` | 1 回だけ | `entries`（リソースの全行）、`rows`、`column`、`language`（言語ごとの列のとき） | 列見出しの「⋮」メニュー |
+| `selection` | 1 回だけ | `entries`（選んだ行。行の指定がなければ全行）、`rows` | 複数行を選んだときのバー |
+| `file` | 1 回だけ | `entries`（リソースの全行）、`rows` | ツールバーの「アクション ▾」 |
 | `review` | 投稿の転載ごとに 1 回 | `entry`、`row`、`review`（投稿）、`column`（レビュー列）、`value`（投稿の判定）、`language` | レビューの投稿パネル |
 
 どの `target` でも、`options`（設定の `options`）、`secrets`、`env`、`host`（[host.md](host.md)）が入ります。表にない項目は `undefined` です。たとえば `file` 対象のアクションでは `ctx.entry` は `undefined` なので、行は `ctx.entries` から読みます。
+
+`rows` は、`entries` と同じ順に並んだ `row` の配列です（`ctx.rows[i]` が `ctx.entries[i]` の行）。リソースを書き出す、外部のサービスに送るといったアクションは、ここから各行の本文と列の値を読みます。ほかのリソースの行は `ctx.host.project.rows(リソースの ID)` で読めます（[host.md](host.md#プロジェクトを読むhostproject)）。
 
 `entry` は `{ key, resource, meta?, stableId? }` です。`row` は、同じ行のほかの値を読む窓口で、`row.text(言語 ID)` で本文を、`row.get(列 ID, 言語 ID?)` で列の値を返します。
 

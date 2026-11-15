@@ -64,9 +64,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ op: string
         break;
       case "setMembership": {
         const role = str(body["role"]);
-        if (role !== "viewer" && role !== "translator" && role !== "reviewer" && role !== "manager") {
-          return errorResponse({ code: "invalid", message: "役割は viewer / translator / reviewer / manager のどれかにしてください。" });
-        }
+        // そのプロジェクトで定義された役割かどうかは、サービス層が確かめる。
+        if (role === undefined || role === "") return errorResponse({ code: "invalid", message: "役割（role）を指定してください。" });
         const languages = Array.isArray(body["languages"]) ? (body["languages"] as unknown[]).filter((x): x is string => typeof x === "string") : undefined;
         result = await a.setMembership(actor, str(body["projectId"]) ?? "", str(body["user"]) ?? "", { role, ...(languages && languages.length ? { languages } : {}) });
         break;

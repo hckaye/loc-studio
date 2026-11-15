@@ -6,6 +6,7 @@ import { ApiError } from "./api-types.js";
 import type { ValidateIssue, ValidateResult } from "./api-types.js";
 import type { WsContext } from "./context.js";
 import { errorText } from "./context.js";
+import { metaIssuesOf } from "./cells.js";
 import { issueKey, validateEntries } from "./issues.js";
 
 export async function validate(ctx: WsContext, params: { resourceIds?: string[]; languages?: string[] } = {}): Promise<ValidateResult> {
@@ -21,8 +22,18 @@ export async function validate(ctx: WsContext, params: { resourceIds?: string[];
       // 一括の確認は最新の中身で行う。
       const doc = await ctx.docs.get(id, { force: true });
       const found = await validateEntries(ctx, doc, doc.entries, languages);
+      const meta = await metaIssuesOf(ctx, doc, doc.entries, languages);
       const issues: ValidateIssue[] = [];
       for (const data of doc.entries) {
+        // 本文以外の列のセル（行に 1 つの列は language なし）。
+        for (const [cellId, list] of meta.get(data.key) ?? []) {
+          const { language } = ctx.parseCellId(cellId);
+          result.summary.cells++;
+          for (const iss of list) {
+            result.summary[iss.severity]++;
+            issues.push({ ...iss, key: data.key, ...(language ? { language: language.id } : {}), cellId });
+          }
+        }
         for (const lang of languages) {
           const list = found.get(issueKey(data.key, lang.id));
           if (!list || list.length === 0 || !textCol) continue;

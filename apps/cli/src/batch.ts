@@ -349,11 +349,14 @@ async function cmdStatus(ws: Workspace, opts: CliOptions, io: CliIO): Promise<nu
     }
   }
   const unreadable = outs.filter((o) => o.error !== undefined).length;
+  // 進捗の数の単位（設定の grid.progressUnit）。行数でないときは、何を数えた数かを出す。
+  const unit = (await ws.info()).grid.progressUnit;
   if (opts.json) {
-    json(io, { resources: outs.map(({ error, ...o }) => (error !== undefined ? { ...o, error } : o)), unreadable });
+    json(io, { resources: outs.map(({ error, ...o }) => (error !== undefined ? { ...o, error } : o)), unreadable, progressUnit: unit });
     return unreadable > 0 ? 1 : 0;
   }
   const lines: string[] = [];
+  if (unit !== "rows" && outs.length > 0) lines.push(`進捗は、原文の${unit === "characters" ? "文字数" : "語数"}で数えています。`, "");
   for (const o of outs) {
     if (o.error !== undefined) {
       lines.push(`${o.path}  (読めません: ${o.error})`, "");
@@ -409,6 +412,46 @@ async function cmdSet(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
   return 0;
 }
 
+async function findResource(ws: Workspace, opts: CliOptions, command: string): Promise<ResourceNode> {
+  if (opts.resource === undefined) throw new UsageError(`${command} には --resource <path> が必要です。`);
+  const res = flatten(await ws.tree()).find((r) => r.path === opts.resource || r.id === opts.resource);
+  if (!res) throw new ApiError("not-found", `リソース "${opts.resource}" が見つかりません。`);
+  return res;
+}
+
+/** entry add / remove / rename: 行を足す・消す・キーを変える（すぐリソースに書く）。 */
+async function cmdEntry(ws: Workspace, opts: CliOptions, io: CliIO): Promise<number> {
+  const res = await findResource(ws, opts, `entry ${opts.sub ?? ""}`);
+  let changes: Parameters<Workspace["editEntries"]>[0]["changes"];
+  let summary: string;
+  if (opts.sub === "add") {
+    const [key] = opts.args as [string];
+    changes = [{ type: "add", key, ...(opts.after !== undefined ? { after: opts.after } : {}), ...(opts.text ? { text: opts.text } : {}) }];
+    summary = `行 ${key} を追加`;
+  } else if (opts.sub === "remove") {
+    if (!opts.keys || opts.keys.length === 0) throw new UsageError("entry remove には --keys <k1,k2> が必要です。");
+    changes = opts.keys.map((key) => ({ type: "remove" as const, key }));
+    summary = `${opts.keys.length} 行を削除（${opts.keys.join(", ")}）`;
+  } else {
+    const [key, newKey] = opts.args as [string, string];
+    changes = [{ type: "rename", key, newKey }];
+    summary = `キー ${key} を ${newKey} に変更`;
+  }
+  const r = await ws.editEntries({ resourceId: res.id, changes });
+  if (opts.json) json(io, { resource: res.path, changes, entries: r.entries });
+  else io.stdout(`${res.path}: ${summary}（${r.entries} 行）\n`);
+  return 0;
+}
+
+/** resource create: 行のない新しいリソースを作る。 */
+async function cmdResource(ws: Workspace, opts: CliOptions, io: CliIO): Promise<number> {
+  const [resourcePath] = opts.args as [string];
+  const { resource } = await ws.createResource({ path: resourcePath });
+  if (opts.json) json(io, { resource });
+  else io.stdout(`リソースを作りました: ${resource.path}\n`);
+  return 0;
+}
+
 /** サービス層を通すコマンドを実行する。ワークスペースは必ず閉じる。 */
 export async function runBatchCommand(opts: CliOptions, io: CliIO): Promise<number> {
   const dir = path.resolve(io.cwd, opts.project ?? ".");
@@ -430,6 +473,10 @@ export async function runBatchCommand(opts: CliOptions, io: CliIO): Promise<numb
         return await cmdSave(ws, opts, io);
       case "set":
         return await cmdSet(ws, opts, io);
+      case "entry":
+        return await cmdEntry(ws, opts, io);
+      case "resource":
+        return await cmdResource(ws, opts, io);
       default:
         throw new Error(`サービス層のコマンドではありません: ${opts.command}`);
     }

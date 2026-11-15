@@ -38,7 +38,8 @@ export function makeInfo(over: Partial<ProjectInfo> = {}): ProjectInfo {
       { id: "tools", kind: "actions", scope: "language", label: "操作", actions: ["ticket"] },
     ],
     languageSets: {},
-    grid: { pinCommon: true, maxPinnedRatio: 0.9 },
+    grid: { pinCommon: true, maxPinnedRatio: 0.9, progressUnit: "rows" },
+    editor: { referenceLanguages: [], count: { unit: "codepoints", skipTokens: false } },
     user: { name: "tester", source: "local", locked: false },
     storage: { path: "/tmp/test/.loc-studio/meta.db", shared: false },
     actions: [{ id: "ticket", label: "チケット", target: "cell" }],
@@ -50,7 +51,13 @@ export function makeInfo(over: Partial<ProjectInfo> = {}): ProjectInfo {
     changeSeq: 1,
     localSettings: {},
     untrustedPlugins: 0,
-    permissions: { role: "manager", can: { edit: true, review: true, run: true, manage: true } },
+    permissions: { role: "manager", can: { edit: true, review: true, run: true, structure: true, manage: true } },
+    roles: [
+      { id: "viewer", label: "閲覧" },
+      { id: "translator", label: "翻訳" },
+      { id: "reviewer", label: "レビュー" },
+      { id: "manager", label: "管理" },
+    ],
     renderers: [],
     ...over,
   };
@@ -80,7 +87,7 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
   const api = {
     info: vi.fn(async () => info),
     tree: vi.fn(async (): Promise<R<"tree">> => [{ id: "res", name: "res.csv", kind: "resource", resource: { id: "res.csv", path: "res.csv", name: "res.csv" } }]),
-    stats: vi.fn(async () => []),
+    stats: vi.fn(async (): Promise<R<"stats">> => []),
     rows: vi.fn(async (req: RowsRequest) => ({ total: rows.length, totalAll: rows.length, rows: rows.slice(req.offset, req.offset + req.limit), diagnostics: [] })),
     rowDetail: vi.fn(async ({ key }: { key: string }) => ({ row: rows.find((r) => r.key === key)!, languages: info.languages.map((l) => l.id) })),
     history: vi.fn(async () => []),
@@ -106,11 +113,32 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
     runAction: vi.fn(async (): Promise<R<"runAction">> => ({ patched: 0 })),
     generate: vi.fn(async () => ({ total: 1, cached: 0, toRun: 1 })),
     cancelJob: vi.fn(),
+    editEntries: vi.fn(async (): Promise<R<"editEntries">> => ({ entries: rowCount })),
+    createResource: vi.fn(async ({ path }: { path: string }): Promise<R<"createResource">> => ({ resource: { id: path, path, name: path.split("/").pop()! } })),
     setLocalSetting: vi.fn(async () => []),
     updateProjectSettings: vi.fn(async () => info),
     reloadPlugins: vi.fn(async () => info),
     reloadResource: vi.fn(),
     search: vi.fn(async (): Promise<R<"search">> => []),
+    // {name} の形を変数として分ける、簡単な記法。
+    tokens: vi.fn(async ({ texts }: { texts: string[] }): Promise<R<"tokens">> =>
+      texts.map((text) => {
+        const out: R<"tokens">[number] = [];
+        let pos = 0;
+        for (const m of text.matchAll(/\{[^}]*\}/g)) {
+          if (m.index > pos) out.push({ kind: "text", value: text.slice(pos, m.index), range: { start: pos, end: m.index } });
+          out.push({ kind: "variable", value: m[0], range: { start: m.index, end: m.index + m[0].length } });
+          pos = m.index + m[0].length;
+        }
+        if (pos < text.length) out.push({ kind: "text", value: text.slice(pos), range: { start: pos, end: text.length } });
+        return out;
+      }),
+    ),
   };
+  // モックの形がサービス層（WorkspaceApi）とずれたら、ここで型のエラーになる（メソッドの過不足と、戻り値の形）。
+  // 中身のない vi.fn() は、テストが自分で戻り値を決めるメソッド。
+  api satisfies { [K in keyof WorkspaceApi]: (...args: never[]) => Promise<R<K>> };
+  const _noExtra: Exclude<keyof typeof api, keyof WorkspaceApi> extends never ? true : never = true;
+  void _noExtra;
   return { api: api as unknown as ClientApi & typeof api, rows };
 }

@@ -1,3 +1,5 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Workspace } from "./api-types.js";
 import { textHash } from "./hash.js";
@@ -272,5 +274,62 @@ describe("setCell / setCells", () => {
     expect(rows.total).toBe(3);
     const h = await ws.history({ resourceId: UI, key: "UI_GOLD" });
     expect(h[0]).toMatchObject({ cellId: "textStatus@ja", cause: "bulk", newValue: "done" });
+  });
+});
+
+describe("日付の列（type: \"date\"）", () => {
+  it("\"2026-11-15\" の形の、実在する日付だけを受け付ける。null で値を消せる", async () => {
+    const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+    await tp.patchConfig({ columns: [...config.columns, { id: "due", kind: "meta", scope: "entry", type: "date", source: "builtin.db" }] });
+    await ws.reloadPlugins();
+    const set = (value: unknown) => ws.setCell({ resourceId: UI, key: "UI_OK", cellId: "due", value });
+    expect(await set("2026-11-15")).toMatchObject({ value: "2026-11-15" });
+    expect(await set("2028-02-29")).toMatchObject({ value: "2028-02-29" }); // うるう年
+    for (const bad of ["2026-02-30", "2026-13-01", "2026/11/15", "2026-1-5", "tomorrow", "", 20261115, true]) {
+      await expect(set(bad), String(bad)).rejects.toMatchObject({ code: "invalid" });
+    }
+    expect((await ws.rowDetail({ resourceId: UI, key: "UI_OK" })).row.cells["due"]).toMatchObject({ value: "2028-02-29" });
+    expect(await set(null)).toMatchObject({ value: null });
+  });
+});
+
+describe("Shift_JIS の CSV（formats の options.encoding）", () => {
+  const SJIS = "Assets/Text/sjis/menu.csv";
+  const ascii = (s: string): number[] => [...s].map((c) => c.charCodeAt(0));
+  // 期待するバイト列は、ここに書き下す。「表」= 95 5C、「あ」= 82 A0。
+  const original = Buffer.from([...ascii("ID,JP,EN,CN,KR,MaxLen\r\nMENU_A,"), 0x95, 0x5c, ...ascii(",Table,,,\r\n")]);
+  const bytes = async (): Promise<string> => (await readFile(path.join(tp.root, ...SJIS.split("/")))).toString("hex");
+
+  beforeEach(async () => {
+    await mkdir(path.join(tp.root, "Assets", "Text", "sjis"), { recursive: true });
+    await writeFile(path.join(tp.root, ...SJIS.split("/")), original);
+    const config = JSON.parse(await tp.read("loc-studio.project.json")) as { formats: { options: Record<string, unknown> }[] };
+    await tp.patchConfig({
+      formats: [{ use: "builtin.csv", match: "Assets/Text/sjis/*.csv", options: { ...config.formats[0]!.options, encoding: "shift_jis" } }, ...config.formats],
+    });
+    await ws.reloadPlugins();
+  });
+
+  it("読めて、保存すると変えたセルだけが Shift_JIS のバイト列で変わる", async () => {
+    const rows = await ws.rows({ resourceId: SJIS, languages: ["ja"], offset: 0, limit: 10 });
+    expect(rows.rows.map((r) => [r.key, r.cells["text@ja"]!.value])).toEqual([["MENU_A", "表"]]);
+    await ws.setText({ resourceId: SJIS, key: "MENU_A", language: "ja", value: "あ表" });
+    expect(await ws.save({ resourceId: SJIS })).toEqual({ saved: 1, conflicts: [] });
+    expect(await bytes()).toBe(original.toString("hex").replace("955c", "82a0955c"));
+    // ほかのリソース（UTF-8）は、これまでどおり読める。
+    expect((await ws.rows({ resourceId: UI, languages: ["ja"], offset: 0, limit: 1 })).rows[0]!.cells["text@ja"]!.value).toBe("決定");
+  });
+
+  it("Shift_JIS で表せない文字の保存は、文字を示して断り、ファイルは変えず、編集は未保存のまま残す", async () => {
+    await ws.setText({ resourceId: SJIS, key: "MENU_A", language: "ko", value: "확인" });
+    const error = await ws.save({ resourceId: SJIS }).then(
+      () => undefined,
+      (e: unknown) => e as { code?: string; message: string },
+    );
+    expect(error?.code).toBe("failed");
+    expect(error?.message).toBe("リソース Assets/Text/sjis/menu.csv に変更を当てられませんでした: 文字「확」（U+D655）は Shift_JIS で表せません。");
+    expect(await bytes()).toBe(original.toString("hex"));
+    const cell = (await ws.rows({ resourceId: SJIS, languages: ["ko"], offset: 0, limit: 10 })).rows[0]!.cells["text@ko"]!;
+    expect(cell).toMatchObject({ value: "확인", draft: true });
   });
 });

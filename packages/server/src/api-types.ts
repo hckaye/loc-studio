@@ -7,13 +7,16 @@ import type {
   Action,
   ActionResult,
   ColumnDef,
+  EntryData,
   Diagnostic,
   LanguageDef,
   LanguageId,
   Plugin,
   ProjectConfig,
+  TextToken,
   ResourceRef,
   ReviewPost,
+  RoleDef,
   Severity,
 } from "@loc-studio/sdk";
 
@@ -108,7 +111,14 @@ export interface ProjectInfo {
   /** 解決済み。並び順どおり。 */
   columns: ColumnDef[];
   languageSets: Record<string, LanguageId[]>;
-  grid: { pinCommon: boolean; maxPinnedRatio: number };
+  grid: { pinCommon: boolean; maxPinnedRatio: number; progressColumn?: string; progressUnit: "rows" | "characters" | "words" };
+  /** 本文の編集画面の設定（設定の editor を解決したもの。プロジェクトにない言語や列は除いてある）。 */
+  editor: {
+    referenceLanguages: LanguageId[];
+    /** undefined: 設定に書かれていない（その言語の生成列だけを出す）。 */
+    referenceColumns?: string[];
+    count: { unit: "codepoints" | "utf16" | "bytes" | "width"; skipTokens: boolean };
+  };
   user: { name: string; source: SettingSource; locked: boolean };
   storage: { path: string; shared: boolean };
   actions: ActionInfo[];
@@ -130,6 +140,8 @@ export interface ProjectInfo {
   localSettings: Record<string, unknown>;
   /** 呼び出した利用者ができること（ローカルモードではすべて）。 */
   permissions: Permissions;
+  /** このプロジェクトで割り当てられる役割（同梱の役割に設定の roles を重ねたもの）。 */
+  roles: { id: string; label: string }[];
   /** 読み込んだ（信頼された）プラグインの独自描画。hash はモジュールのファイルの SHA-256（キャッシュの区別に使う）。 */
   renderers: { id: string; pluginName: string; hash: string }[];
 }
@@ -144,6 +156,7 @@ export interface TreeNodeInfo {
   unsaved?: number;
 }
 
+/** 進捗。数える単位は ProjectInfo.grid.progressUnit（行数、原文の文字数、原文の語数）。 */
 export interface ProgressCount {
   complete: number;
   total: number;
@@ -186,7 +199,7 @@ export interface CellInfo {
   stale?: boolean;
   /** 本文のみ: 最後に編集したあとで、基になる言語の本文が変わった。 */
   needsRecheck?: boolean;
-  /** 本文のみ。 */
+  /** 検証で見つかった問題（本文と、バリデータの対象になった列）。 */
   issues?: IssueInfo[];
   /** 生成列のみ。 */
   generated?: "fresh" | "stale" | "missing";
@@ -199,6 +212,10 @@ export interface CellInfo {
 export interface RowInfo {
   key: string;
   index: number;
+  /** リソースの中での行番号（1 始まり。フォーマットが EntryData.location で知らせたとき）。 */
+  line?: number;
+  /** キーが変わっても同じ行だと分かる ID（フォーマットが EntryData.stableId で知らせたとき）。 */
+  stableId?: string;
   cells: Record<string, CellInfo>;
 }
 
@@ -210,8 +227,17 @@ export interface RowsRequest {
   limit: number;
   /** キーと、表示中の言語の本文の部分一致（大文字小文字を区別しない）。 */
   search?: string;
-  /** 列の値での絞り込み（未設定は列の type.default とみなす）。 */
-  filters?: { cellId: string; values: unknown[] }[];
+  /**
+   * 列の値での絞り込み。values: どれかの値と同じ（未設定は列の type.default とみなす）。
+   * contains: 値を文字にしたものに、この文字列を含む（大文字小文字を区別しない）。両方書いたら、両方に合う行。
+   */
+  filters?: { cellId: string; values?: unknown[]; contains?: string }[];
+  /**
+   * 並べ替え。cellId の列の値の順に並べる（省略時は、リソースの中の順）。dir の既定は "asc"。
+   * 数値は数の順、選択式の列は選択肢の並び順、そのほかは文字の順（文字の中の数字は数として比べる）。
+   * 値のない行は、昇順でも降順でも最後に置く。同じ値の行は、リソースの中の順のまま。
+   */
+  sort?: { cellId: string; dir?: "asc" | "desc" };
   /** 表示中の言語のどれかの本文が空。 */
   onlyUntranslated?: boolean;
   /** 表示中の言語のどれかに、この重さ以上の問題がある。 */
@@ -230,7 +256,8 @@ export interface RowsResponse {
   diagnostics: Diagnostic[];
 }
 
-export type HistoryCause = "manual" | "action" | "bulk" | "external" | "review" | "generate";
+/** 変更のきっかけ。hook はフック（WorkflowHook）が返した変更点。 */
+export type HistoryCause = "manual" | "action" | "bulk" | "external" | "review" | "generate" | "hook";
 
 export interface HistoryInfo {
   id: string;
@@ -302,8 +329,8 @@ export type ApiErrorCode =
   /** ログインの失敗が続いたため、しばらく受け付けない。 */
   | "throttled";
 
-/** 役割（Web モード）。 */
-export type Role = "viewer" | "translator" | "reviewer" | "manager";
+/** 役割の ID（Web モード）。同梱の viewer / translator / reviewer / manager か、プロジェクト設定の roles で定義したもの。 */
+export type Role = string;
 
 /** 呼び出しごとの利用者（Web モード）。ないときはローカルモード。 */
 export interface CallContext {
@@ -318,11 +345,22 @@ export interface CallContext {
   admin?: boolean;
 }
 
-/** いまの利用者ができること。 */
+/**
+ * いまの利用者ができること。画面はこれを見て操作を無効にする（確認そのものはサービス層が行う）。
+ * editColumns などの絞り込みは、役割に書かれているときだけ入る（ないものは制限なし）。
+ */
 export interface Permissions {
   role: Role;
-  can: { edit: boolean; review: boolean; run: boolean; manage: boolean };
+  /** 役割の表示名（定義に label があるとき）。 */
+  roleLabel?: string;
+  can: { edit: boolean; review: boolean; run: boolean; structure: boolean; manage: boolean };
+  /** true: 役割の定義や選択肢の roles に縛られない（ローカルモードと、サーバーの管理者）。 */
+  unrestricted?: boolean;
   languages?: string[];
+  editColumns?: string[];
+  reviewColumns?: string[];
+  actions?: string[];
+  generators?: string[];
 }
 
 /** 利用者ごとの設定の置き場所（Web モード。ServerRuntime が AuthService で用意する）。 */
@@ -381,6 +419,12 @@ export interface RunActionResult {
   errors?: string[];
 }
 
+/** 行の構成の変更（フォーマットの apply に渡す Change の、行に関するもの）。 */
+export type EntryChange =
+  | { type: "add"; key: string; after?: string; text?: EntryData["text"]; meta?: Record<string, unknown> }
+  | { type: "remove"; key: string }
+  | { type: "rename"; key: string; newKey: string };
+
 /** 引数のないメソッドも RPC の都合で 1 つ受け取る（無視する）。 */
 export type NoParams = Record<string, never> | undefined | void;
 
@@ -397,6 +441,11 @@ export interface WorkspaceApi {
   /** 保存せずに本文を確かめる（入力中の確認用）。何も保存しない。 */
   validateText(params: { resourceId: string; key: string; language: LanguageId; value: string }): Promise<IssueInfo[]>;
   search(params: { query: string; languages?: LanguageId[]; limit?: number }): Promise<SearchHit[]>;
+  /**
+   * 本文を、そのリソースの記法（TextSyntax）でトークンに分ける。texts と同じ順・同じ数で返す。
+   * 画面が変数やタグを色分けしたり、原文の変数を訳文に差し込んだりするのに使う。
+   */
+  tokens(params: { resourceId: string; texts: string[] }): Promise<TextToken[][]>;
   settings(params?: NoParams): Promise<{
     local: SettingInfo[];
     localFile: string;
@@ -441,6 +490,13 @@ export interface WorkspaceApi {
   runAction(params: RunActionParams): Promise<RunActionResult>;
   generate(params: GenerateParams): Promise<{ jobId?: string; total: number; cached: number; toRun: number }>;
   cancelJob(params: { id: string }): Promise<JobInfo>;
+  /**
+   * 行を足す・消す・キーを変える（書いた順に当て、すぐリソースに書く）。フォーマットが対応していない変更は failed。
+   * キーの変更では、ステータス、レビュー、履歴、未保存の編集を新しいキーに移す。
+   */
+  editEntries(params: { resourceId: string; changes: EntryChange[] }): Promise<{ entries: number; revision?: string }>;
+  /** 新しいリソース（行のない状態）を作る。ツリーとフォーマットが作成に対応しているときだけ。 */
+  createResource(params: { path: string }): Promise<{ resource: ResourceRef }>;
   setLocalSetting(params: { key: string; value: unknown }): Promise<SettingInfo[]>;
   updateProjectSettings(params: { patch: Record<string, unknown> }): Promise<ProjectInfo>;
   reloadPlugins(params?: NoParams): Promise<ProjectInfo>;
@@ -460,8 +516,10 @@ export interface Workspace extends WorkspaceApi {
   waitForJob(id: string): Promise<JobInfo>;
   /** 独自描画のモジュール（.js / .mjs）の中身。読み込んだプラグインに登録されたものだけ。RPC では公開しない。 */
   rendererModule(id: string): Promise<{ source: string; hash: string; contentType: "text/javascript" } | undefined>;
-  /** fn を利用者 call の呼び出しとして実行する（利用者ごとの設定を読み込む）。dispatch が使う。 */
+  /** fn を利用者 call の呼び出しとして実行する（利用者ごとの設定と、プロジェクトの役割の定義を読み込む）。dispatch が使う。 */
   withCall<T>(call: CallContext, fn: () => Promise<T>): Promise<T>;
+  /** 役割の定義（権限の確認に使う）。制限された状態では同梱の役割。 */
+  roles(): Record<string, RoleDef>;
   /** コードの設定を信頼するまでの制限された状態か。 */
   readonly restricted: boolean;
   /** 管理者でない利用者に返す値から伏せるパス（dispatch の伏せる処理が使う）と、伏せた内部のエラーを残す先。 */
@@ -481,6 +539,7 @@ export const WORKSPACE_METHODS = [
   "textVersion",
   "validateText",
   "search",
+  "tokens",
   "settings",
   "plugins",
   "jobs",
@@ -498,6 +557,8 @@ export const WORKSPACE_METHODS = [
   "runAction",
   "generate",
   "cancelJob",
+  "editEntries",
+  "createResource",
   "setLocalSetting",
   "updateProjectSettings",
   "reloadPlugins",

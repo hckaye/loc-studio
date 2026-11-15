@@ -135,6 +135,20 @@ describe("status", () => {
     expect(r.stdout).not.toContain("chapter01.csv");
     expect(r.stdout).toMatch(/textStatus: ko 0\/4 \(0%\)/);
     expect(r.stdout).not.toMatch(/ja \d/);
+    expect(r.stdout).not.toContain("数えています");
+  });
+
+  it("grid.progressUnit が characters なら、進捗を原文の文字数で出し、その旨を示す", async () => {
+    const file = path.join(project, "loc-studio.project.json");
+    const config = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+    await writeFile(file, JSON.stringify({ ...config, grid: { progressUnit: "characters" } }, null, 2));
+    expect((await cli(["set", "textStatus@ko", "done"], ["--resource", UI, "--keys", "UI_OK"])).code).toBe(0);
+    const text = await cli(["status"], ["--resources", "**/ui.csv", "--languages", "ko"]);
+    expect(text.stdout).toContain("進捗は、原文の文字数で数えています。");
+    // ui.csv の原文（ja）は合計 27 文字。「決定」は 2 文字。
+    expect(text.stdout).toMatch(/textStatus: ko 2\/27 \(7\.4%\)/);
+    const data = JSON.parse((await cli(["status"], ["--resources", "**/ui.csv", "--json"])).stdout) as { progressUnit: string };
+    expect(data.progressUnit).toBe("characters");
   });
 });
 
@@ -308,5 +322,83 @@ describe("run", () => {
     const r = await cli(["run", "fake.count"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("壊れた");
+  });
+});
+
+describe("entry（行の追加・削除・キーの変更）", () => {
+  const lines = async (rel: string): Promise<string[]> => (await readFile(path.join(project, ...rel.split("/")), "utf8")).replace(/\n$/, "").split("\n");
+
+  it("add: 指定した行の後ろに、本文つきで足す（--text は言語ごとに繰り返せ、本文に = があってもよい）", async () => {
+    const r = await cli(["entry", "add", "UI_NEW"], ["--resource", UI, "--after", "UI_OK", "--text", "ja=新規", "--text", "ko=a=b"]);
+    expect(r).toMatchObject({ code: 0, stderr: "" });
+    expect(r.stdout).toBe(`${UI}: 行 UI_NEW を追加（5 行）\n`);
+    expect((await lines(UI)).slice(1, 3)).toEqual(["UI_OK,決定,OK,确定,확인,4", "UI_NEW,新規,,,a=b,"]);
+    // --after を省くと末尾。--json は当てた変更と行数を返す。
+    const j = await cli(["entry", "add", "UI_LAST", "--json"], ["--resource", UI]);
+    expect(JSON.parse(j.stdout)).toEqual({ resource: UI, changes: [{ type: "add", key: "UI_LAST" }], entries: 6 });
+    expect((await lines(UI)).at(-1)).toBe("UI_LAST,,,,,");
+  });
+
+  it("rename: キーを変え、ステータスと履歴が新しいキーに付いてくる", async () => {
+    await cli(["set", "textStatus@ko", "done"], ["--resource", UI, "--keys", "UI_OK"]);
+    const r = await cli(["entry", "rename", "UI_OK", "UI_CONFIRM"], ["--resource", UI]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe(`${UI}: キー UI_OK を UI_CONFIRM に変更（4 行）\n`);
+    expect((await lines(UI))[1]).toBe("UI_CONFIRM,決定,OK,确定,확인,4");
+    const ws = await openWs();
+    expect((await ws.rowDetail({ resourceId: UI, key: "UI_CONFIRM" })).row.cells["textStatus@ko"]).toMatchObject({ value: "done" });
+    expect(await ws.history({ resourceId: UI, key: "UI_CONFIRM", cellId: "textStatus@ko" })).toHaveLength(1);
+  });
+
+  it("remove: --keys の行をまとめて消す", async () => {
+    const r = await cli(["entry", "remove"], ["--resource", UI, "--keys", "UI_OK,UI_GOLD"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe(`${UI}: 2 行を削除（UI_OK, UI_GOLD）（2 行）\n`);
+    expect((await lines(UI)).map((l) => l.split(",")[0])).toEqual(["ID", "UI_CANCEL", "UI_SAVE_CONFIRM"]);
+  });
+
+  it("使い方の誤りは 2、当てられない変更は 1 で、どちらもリソースを変えない", async () => {
+    const before = await readFile(path.join(project, ...UI.split("/")), "utf8");
+    // 使い方の誤り: 引数やオプションが足りない、知らないサブコマンド、ないリソース、--text の形。
+    expect((await cli(["entry", "add"], ["--resource", UI])).code).toBe(2);
+    expect((await cli(["entry", "add", "X"], [])).code).toBe(2);
+    expect((await cli(["entry", "remove"], ["--resource", UI])).code).toBe(2);
+    expect((await cli(["entry", "rename", "UI_OK"], ["--resource", UI])).code).toBe(2);
+    expect((await cli(["entry", "move", "UI_OK"], ["--resource", UI])).code).toBe(2);
+    expect((await cli(["entry", "add", "X"], ["--resource", "none.csv"])).code).toBe(2);
+    expect((await cli(["entry", "add", "X"], ["--resource", UI, "--text", "ja"])).code).toBe(2);
+    expect((await cli(["entry", "add", "X"], ["--resource", UI, "--text", "xx=y"])).code).toBe(2); // プロジェクトにない言語
+    expect((await cli(["entry", "remove"], ["--resource", UI, "--keys", "A", "--after", "B"])).code).toBe(2); // ほかのサブコマンドのオプション
+    // 当てられない変更（すでにあるキー、ない行）は、理由を出して 1。
+    const dup = await cli(["entry", "add", "UI_OK"], ["--resource", UI]);
+    expect(dup.code).toBe(1);
+    expect(dup.stderr).toContain("UI_OK");
+    expect((await cli(["entry", "remove"], ["--resource", UI, "--keys", "NOPE"])).code).toBe(1);
+    expect((await cli(["entry", "rename", "NOPE", "X"], ["--resource", UI])).code).toBe(1);
+    expect(await readFile(path.join(project, ...UI.split("/")), "utf8")).toBe(before);
+  });
+});
+
+describe("resource create", () => {
+  const NEW = "Assets/Text/dlc/new.csv";
+
+  it("見出しだけのリソースを作り、tree に出て、行を足せる", async () => {
+    const r = await cli(["resource", "create", NEW]);
+    expect(r).toMatchObject({ code: 0, stdout: `リソースを作りました: ${NEW}\n` });
+    expect(await readFile(path.join(project, ...NEW.split("/")), "utf8")).toBe("ID,JP,EN,CN,KR,MaxLen\n");
+    expect((await cli(["tree"])).stdout).toContain("new.csv  0 件");
+    expect((await cli(["entry", "add", "DLC_1"], ["--resource", NEW, "--text", "ja=追加"])).code).toBe(0);
+    expect(await readFile(path.join(project, ...NEW.split("/")), "utf8")).toBe("ID,JP,EN,CN,KR,MaxLen\nDLC_1,追加,,,,\n");
+  });
+
+  it("すでにあるリソースは 1、場所の書き方の誤りやフォーマットのない拡張子は 2 で、何も作らない", async () => {
+    const before = await readFile(path.join(project, ...UI.split("/")), "utf8");
+    expect((await cli(["resource", "create", UI])).code).toBe(1);
+    expect(await readFile(path.join(project, ...UI.split("/")), "utf8")).toBe(before);
+    expect((await cli(["resource", "create", "../escape.csv"])).code).toBe(2);
+    expect((await cli(["resource", "create", "Assets/Text/new.txt"])).code).toBe(2);
+    expect((await cli(["resource", "create"])).code).toBe(2);
+    await expect(readFile(path.join(tmp, "escape.csv"))).rejects.toThrow();
+    await expect(readFile(path.join(project, "Assets", "Text", "new.txt"))).rejects.toThrow();
   });
 });

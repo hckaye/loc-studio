@@ -53,6 +53,35 @@ describe("表", () => {
     expect(screen.getByRole("button", { name: "英語 を左に固定" })).toBeTruthy();
   });
 
+  it("本文以外の列のセルにも、検証の問題の印を出す（問題のないセルには出さない）", async () => {
+    const { container } = await renderStudio({}, (api) => {
+      const orig = api.rows.getMockImplementation()!;
+      api.rows.mockImplementation(async (req) => {
+        const res = await orig(req);
+        const issue = (severity: "error" | "warning", message: string) => ({ validatorId: "v", code: "c", message, severity });
+        const rows = res.rows.map((r) =>
+          r.key === "KEY_1"
+            ? {
+                ...r,
+                cells: {
+                  ...r.cells,
+                  maxLen: { ...r.cells["maxLen"]!, issues: [issue("warning", "上限が大きすぎます"), issue("error", "数字ではありません")] },
+                  "status@en": { ...r.cells["status@en"]!, issues: [issue("warning", "本文が空のまま完了です")] },
+                },
+              }
+            : r,
+        );
+        return { ...res, rows };
+      });
+    });
+    // いちばん重い問題の印を出し、ツールチップに全件を並べる。
+    const number = within(cell(container, 1, ".k-number")).getByLabelText("エラー: 2 件");
+    expect(number.getAttribute("title")).toBe("[警告] 上限が大きすぎます\n[エラー] 数字ではありません");
+    expect(within(cell(container, 1, ".k-enum", 1)).getByLabelText("警告: 1 件").getAttribute("title")).toBe("[警告] 本文が空のまま完了です");
+    expect(within(cell(container, 1, ".k-enum", 0)).queryByLabelText(/件$/)).toBeNull();
+    expect(within(cell(container, 0, ".k-number")).queryByLabelText(/件$/)).toBeNull();
+  });
+
   it("本文のセルのダブルクリックで編集モーダルを開く", async () => {
     const { container, api } = await renderStudio();
     fireEvent.doubleClick(cell(container, 0, ".k-text", 1));
@@ -80,6 +109,73 @@ describe("表", () => {
     fireEvent.keyDown(grid, { key: "F2" });
     const dialog = await screen.findByRole("dialog", { name: "本文の編集" });
     await waitFor(() => expect(within(dialog).getByText("KEY_1")).toBeTruthy());
+  });
+});
+
+describe("絞り込み", () => {
+  const lastRows = (api: Awaited<ReturnType<typeof renderStudio>>["api"]) => api.rows.mock.calls.at(-1)![0];
+
+  it("「問題あり」は、数える重さを選べる（既定は警告以上）", async () => {
+    const { api } = await renderStudio();
+    expect(screen.queryByRole("combobox", { name: "問題の重さ" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "問題あり" }));
+    await waitFor(() => expect(lastRows(api).onlyIssues).toBe("warning"));
+    fireEvent.change(screen.getByRole("combobox", { name: "問題の重さ" }), { target: { value: "error" } });
+    await waitFor(() => expect(lastRows(api).onlyIssues).toBe("error"));
+    fireEvent.click(screen.getByRole("button", { name: "問題あり" }));
+    await waitFor(() => expect(lastRows(api).onlyIssues).toBeUndefined());
+  });
+
+  it("文字の列は「含む」で絞り込み、選択式の列は値で絞り込む。空に戻すと条件を外す", async () => {
+    const { api } = await renderStudio();
+    const toolbar = within(screen.getByRole("toolbar", { name: "表の操作" }));
+    fireEvent.click(toolbar.getByRole("button", { name: /^メモ/ }));
+    const input = await screen.findByRole("searchbox", { name: "メモ に含む文字" });
+    fireEvent.change(input, { target: { value: "  memo1 " } });
+    await waitFor(() => expect(lastRows(api).filters).toEqual([{ cellId: "note", contains: "memo1" }]));
+    // 選択式の列（状態）の条件と一緒に送る。
+    fireEvent.click(toolbar.getByRole("button", { name: /^状態/ }));
+    fireEvent.click(within(await screen.findByRole("group", { name: "状態 で絞り込む" })).getAllByRole("checkbox", { name: /完了/ })[0]!);
+    await waitFor(() => expect(lastRows(api).filters).toEqual([{ cellId: "status@ja", values: ["done"] }, { cellId: "note", contains: "memo1" }]));
+    fireEvent.change(input, { target: { value: "" } });
+    await waitFor(() => expect(lastRows(api).filters).toEqual([{ cellId: "status@ja", values: ["done"] }]));
+  });
+});
+
+describe("並べ替え", () => {
+  it("列見出しを押すたびに、昇順、降順、解除の順に切り替わり、見出しに向きが出る", async () => {
+    const { api } = await renderStudio();
+    const last = () => api.rows.mock.calls.at(-1)![0];
+    expect(last().sort).toBeUndefined();
+    const header = screen.getByRole("columnheader", { name: /メモ/ });
+    const button = () => within(header).getByRole("button", { name: /メモ で並べ替え/ });
+    expect(header.getAttribute("aria-sort")).toBe("none");
+    fireEvent.click(button());
+    await waitFor(() => expect(last().sort).toEqual({ cellId: "note", dir: "asc" }));
+    expect(header.getAttribute("aria-sort")).toBe("ascending");
+    expect(button().textContent).toBe("メモ ▲");
+    fireEvent.click(button());
+    await waitFor(() => expect(last().sort).toEqual({ cellId: "note", dir: "desc" }));
+    expect(header.getAttribute("aria-sort")).toBe("descending");
+    fireEvent.click(button());
+    await waitFor(() => expect(last().sort).toBeUndefined());
+    expect(header.getAttribute("aria-sort")).toBe("none");
+    expect(button().textContent).toBe("メモ");
+  });
+
+  it("別の列を押すと、その列の昇順に切り替わる（前の列の印は消える）。アクション列の見出しは押せない", async () => {
+    const { api } = await renderStudio();
+    const last = () => api.rows.mock.calls.at(-1)![0];
+    const note = screen.getByRole("columnheader", { name: /メモ/ });
+    const limit = screen.getByRole("columnheader", { name: /上限/ });
+    fireEvent.click(within(note).getByRole("button", { name: /で並べ替え/ }));
+    fireEvent.click(within(limit).getByRole("button", { name: /で並べ替え/ }));
+    await waitFor(() => expect(last().sort).toEqual({ cellId: "maxLen", dir: "asc" }));
+    expect(note.getAttribute("aria-sort")).toBe("none");
+    expect(limit.getAttribute("aria-sort")).toBe("ascending");
+    for (const ops of screen.getAllByRole("columnheader", { name: /操作/ })) {
+      expect(within(ops).queryByRole("button", { name: /で並べ替え/ })).toBeNull();
+    }
   });
 });
 
@@ -130,6 +226,31 @@ describe("選択式のセル", () => {
     fireEvent.change(input2, { target: { value: "x" } });
     fireEvent.keyDown(input2, { key: "Escape" });
     expect(api.setCell).toHaveBeenCalledTimes(1);
+  });
+
+  it("日付の列は日付の入力欄で編集し、空にして確定すると値を消す", async () => {
+    // フィクスチャの「メモ」の列を、日付の列にして確かめる。
+    const columns = makeInfo().columns.map((c) => (c.id === "note" ? { ...c, type: "date" as const } : c));
+    // 行の値も日付にする（日付の入力欄は、日付でない値を空として扱う）。
+    const { container, api } = await renderStudio({ columns }, (api) => {
+      const base = api.rows.getMockImplementation()!;
+      api.rows.mockImplementation(async (req) => {
+        const res = await base(req);
+        return { ...res, rows: res.rows.map((row) => ({ ...row, cells: { ...row.cells, note: { value: "2026-01-02" } } })) };
+      });
+    });
+    fireEvent.doubleClick(cell(container, 0, ".k-string"));
+    const input = cell(container, 0, ".k-string").querySelector("input")!;
+    expect(input.type).toBe("date");
+    expect(input.value).toBe("2026-01-02");
+    fireEvent.change(input, { target: { value: "2026-11-15" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(api.setCell).toHaveBeenCalledWith(expect.objectContaining({ cellId: "note", value: "2026-11-15" })));
+    fireEvent.doubleClick(cell(container, 1, ".k-string"));
+    const input2 = cell(container, 1, ".k-string").querySelector("input")!;
+    fireEvent.change(input2, { target: { value: "" } });
+    fireEvent.keyDown(input2, { key: "Enter" });
+    await waitFor(() => expect(api.setCell).toHaveBeenLastCalledWith(expect.objectContaining({ cellId: "note", value: null })));
   });
 });
 
@@ -352,5 +473,32 @@ describe("計算列とすべて保存の競合", () => {
     const dialog = await screen.findByRole("dialog", { name: /保存できなかった変更（2 件）/ });
     expect(within(dialog).getByText("other.csv")).toBeTruthy();
     expect(dialog.querySelectorAll(".conflict-item")).toHaveLength(2);
+  });
+});
+
+describe("ツリーの進捗", () => {
+  const stats = [{ resourceId: "res.csv", entries: 3, unsaved: 0, issues: { error: 0, warning: 0, info: 0 }, progress: { review: { ja: { complete: 1, total: 4 }, en: { complete: 3, total: 4 } }, status: { ja: { complete: 4, total: 4 } } } }];
+  const progressOf = async (container: HTMLElement) => {
+    await waitFor(() => expect(container.querySelector(".tree-progress")).not.toBeNull());
+    return container.querySelector<HTMLElement>(".tree-progress")!;
+  };
+
+  it("進捗の列（最初のレビュー列）の、全言語の合計と言語ごとの内訳を出す", async () => {
+    const { container } = await renderStudio({}, (api) => api.stats.mockResolvedValue(stats));
+    const el = await progressOf(container);
+    expect(el.getAttribute("aria-label")).toBe("進捗 50%");
+    expect(el.title.split("\n")).toEqual(["合計 4 / 8 行（50%）", "日本語: 1 / 4（25%）", "英語: 3 / 4（75%）"]);
+  });
+
+  it("文字数・語数で数える設定のときは、数の単位を示す", async () => {
+    const grid = { pinCommon: true, maxPinnedRatio: 0.9, progressUnit: "characters" as const };
+    const { container } = await renderStudio({ grid }, (api) => api.stats.mockResolvedValue(stats));
+    expect((await progressOf(container)).title.split("\n")[0]).toBe("合計 4 / 8 文字（原文）（50%）");
+  });
+
+  it("grid.progressColumn で、進捗に使う列を変えられる", async () => {
+    const grid = { pinCommon: true, maxPinnedRatio: 0.9, progressUnit: "rows" as const, progressColumn: "status" };
+    const { container } = await renderStudio({ grid }, (api) => api.stats.mockResolvedValue(stats));
+    expect((await progressOf(container)).getAttribute("aria-label")).toBe("進捗 100%");
   });
 });

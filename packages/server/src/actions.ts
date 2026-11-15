@@ -11,6 +11,7 @@ import type { WsContext } from "./context.js";
 import { errorText } from "./context.js";
 import type { DocState } from "./documents.js";
 import { applyPatches } from "./editing.js";
+import { assertCanRun } from "./permissions.js";
 
 /** これを超える行数はジョブにする。 */
 export const ACTION_JOB_THRESHOLD = 20;
@@ -29,6 +30,7 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
   const found = ctx.configuredActions().find((a) => a.action.id === params?.actionId);
   if (!found) throw new ApiError("not-found", `アクション "${String(params?.actionId)}" は設定の actions にありません。`);
   const { action, options } = found;
+  assertCanRun("action", action.id);
   if (action.target === "review") {
     throw new ApiError("invalid", `アクション "${action.id}" はレビュー先です。forwardReview で投稿を転載してください。`);
   }
@@ -106,10 +108,12 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
     return out;
   }
 
-  // selection / file / column は 1 回だけ。
+  // selection / file / column は 1 回だけ。行の値は rows（entries と同じ順）から読める。
   const entries = action.target === "selection" && keys ? keys.map((k) => ctx.entryOf(doc, k)) : doc.entries;
+  const values = await preload(ctx, doc, entries);
   const actx: ActionContext = {
     entries: entries.map((e) => ctx.toEntry(doc, e)),
+    rows: entries.map((e) => pageRowReader(ctx, doc, e, values)),
     options,
     secrets: ctx.secrets,
     env: ctx.env,

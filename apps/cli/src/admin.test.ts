@@ -68,8 +68,8 @@ describe("user", () => {
     expect(j.users.map((u) => u["name"])).toEqual(expect.arrayContaining(["alice", "bob"]));
     expect(JSON.stringify(j)).not.toMatch(/scrypt/);
     await withAuth(async (auth) => {
-      expect((await auth.login({ name: "alice", password: "alice-password" })).user.admin).toBe(true);
-      expect((await auth.login({ name: "bob", password: "bob-password" })).user.admin).toBe(false);
+      expect((await auth.login({ name: "alice", password: "alice-password", clientAddress: "127.0.0.1" })).user.admin).toBe(true);
+      expect((await auth.login({ name: "bob", password: "bob-password", clientAddress: "127.0.0.1" })).user.admin).toBe(false);
     });
   });
 
@@ -81,7 +81,7 @@ describe("user", () => {
     const pw = m![1]!;
     expect(pw.length).toBeGreaterThanOrEqual(16);
     expect((await cli(["user", "list"])).stdout).not.toContain(pw);
-    await withAuth(async (auth) => expect((await auth.login({ name: "carol", password: pw })).user.name).toBe("carol"));
+    await withAuth(async (auth) => expect((await auth.login({ name: "carol", password: pw, clientAddress: "127.0.0.1" })).user.name).toBe("carol"));
   });
 
   it("引数でパスワードは渡せない・指定の誤りは 2", async () => {
@@ -98,19 +98,20 @@ describe("user", () => {
 
   it("passwd: stdin / 環境変数 / --generate。古いパスワードとセッションは無効", async () => {
     await cli(["user", "add", "dave", "--password-stdin"], { stdin: "old-password" });
-    const token = await withAuth(async (auth) => (await auth.login({ name: "dave", password: "old-password" })).token);
+    const token = await withAuth(async (auth) => (await auth.login({ name: "dave", password: "old-password", clientAddress: "127.0.0.1" })).token);
     expect((await cli(["user", "passwd", "dave", "--password-stdin"], { stdin: "new-password\n" })).code).toBe(0);
     await withAuth(async (auth) => {
       expect(await auth.authenticate(token)).toBeUndefined();
-      await expect(auth.login({ name: "dave", password: "old-password" })).rejects.toMatchObject({ code: "unauthorized" });
-      await auth.login({ name: "dave", password: "new-password" });
+      await expect(auth.login({ name: "dave", password: "old-password", clientAddress: "127.0.0.1" })).rejects.toMatchObject({ code: "unauthorized" });
+      await auth.login({ name: "dave", password: "new-password", clientAddress: "127.0.0.1" });
     });
     expect((await cli(["user", "passwd", "dave", "--password-env", "PW"], { env: { PW: "env-password" } })).code).toBe(0);
     const g = await cli(["user", "passwd", "dave", "--generate"]);
     const pw = /生成したパスワード: (\S+)/.exec(g.stdout)![1]!;
     await withAuth(async (auth) => {
-      await auth.login({ name: "dave", password: pw });
-      await expect(auth.login({ name: "dave", password: "env-password" })).rejects.toBeDefined();
+      await auth.login({ name: "dave", password: pw, clientAddress: "127.0.0.1" });
+      // 生成したパスワードに置き換わったので、前のパスワードでは入れない。
+      await expect(auth.login({ name: "dave", password: "env-password", clientAddress: "127.0.0.1" })).rejects.toMatchObject({ code: "unauthorized" });
     });
     expect((await cli(["user", "passwd", "nobody", "--generate"])).code).toBe(2);
   });
@@ -118,7 +119,7 @@ describe("user", () => {
   it("set: 管理者・無効・表示名、logout", async () => {
     await cli(["user", "add", "root", "--admin", "--password-stdin"], { stdin: "root-password" });
     await cli(["user", "add", "erin", "--password-stdin"], { stdin: "erin-password" });
-    const token = await withAuth(async (auth) => (await auth.login({ name: "erin", password: "erin-password" })).token);
+    const token = await withAuth(async (auth) => (await auth.login({ name: "erin", password: "erin-password", clientAddress: "127.0.0.1" })).token);
     expect((await cli(["user", "set", "erin", "--admin", "--display-name", "エリン"])).code).toBe(0);
     await withAuth(async (auth) => expect(await auth.getUser("erin")).toMatchObject({ admin: true, displayName: "エリン" }));
     expect((await cli(["user", "set", "erin", "--disable"])).code).toBe(0);
@@ -130,7 +131,7 @@ describe("user", () => {
 
     // 無効化でセッションは落ちる（仕様）。
     await withAuth(async (auth) => expect(await auth.authenticate(token)).toBeUndefined());
-    const t2 = await withAuth(async (auth) => (await auth.login({ name: "erin", password: "erin-password" })).token);
+    const t2 = await withAuth(async (auth) => (await auth.login({ name: "erin", password: "erin-password", clientAddress: "127.0.0.1" })).token);
     expect((await cli(["user", "logout", "erin"])).code).toBe(0);
     await withAuth(async (auth) => expect(await auth.authenticate(t2)).toBeUndefined());
   });

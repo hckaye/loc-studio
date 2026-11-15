@@ -283,9 +283,10 @@ export function displayValue(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** 進捗を出す列: 最初のレビュー列、なければ最初の enum の列。 */
+/** 進捗を出す列: 設定の grid.progressColumn。なければ最初のレビュー列、それもなければ最初の enum の列。 */
 export function progressColumn(info: ProjectInfo): ColumnDef | undefined {
-  return info.columns.find((c) => c.kind === "review" && isEnumColumn(c)) ?? info.columns.find((c) => isEnumColumn(c));
+  const configured = info.grid.progressColumn !== undefined ? info.columns.find((c) => c.id === info.grid.progressColumn) : undefined;
+  return configured ?? info.columns.find((c) => c.kind === "review" && isEnumColumn(c)) ?? info.columns.find((c) => isEnumColumn(c));
 }
 
 export function formatTime(iso: string | undefined): string {

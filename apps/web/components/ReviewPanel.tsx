@@ -6,7 +6,7 @@ import { Chip } from "@/components/EnumSelect";
 import { useStudio, useToasts } from "@/components/context";
 import { diffText } from "@/lib/client/diff";
 import { chipColors } from "@/lib/client/colors";
-import { canReview } from "@/lib/client/permissions";
+import { canReview, optionProblem } from "@/lib/client/permissions";
 import { safeHttpUrl } from "@/lib/client/url";
 import {
   cellIdOf,
@@ -51,8 +51,11 @@ export function ReviewPanel({ resourceId, rowKey, gc, initialVerdict, onClose, o
   const targetCellId = targetCol ? cellIdOf(targetCol, gc.language) : undefined;
   const option = options.find((o) => o.value === verdict);
   const commentRequired = option?.requireComment === true;
-  const allowed = canReview(info, gc.col.scope === "language" ? gc.language : undefined);
-  const canPost = allowed.ok && verdict !== undefined && (!commentRequired || comment.trim() !== "") && !busy;
+  const allowed = canReview(info, gc.col.scope === "language" ? gc.language : undefined, gc.col.id);
+  // 判定の遷移と役割の制限。直前の判定（投稿は新しい順）がいまの値。投稿を読み込むまでは制限を出さない。
+  const problemOf = (o: (typeof options)[number]): string | undefined => (posts === null ? undefined : optionProblem(info, gc.col, o, posts[0]?.verdict));
+  const verdictProblem = option ? problemOf(option) : undefined;
+  const canPost = allowed.ok && verdict !== undefined && verdictProblem === undefined && (!commentRequired || comment.trim() !== "") && !busy;
 
   const loadPosts = useCallback(() => {
     api
@@ -157,9 +160,10 @@ export function ReviewPanel({ resourceId, rowKey, gc, initialVerdict, onClose, o
         <legend>判定</legend>
         {options.map((o) => {
           const c = chipColors(o.color);
+          const problem = problemOf(o);
           return (
-            <label key={o.value} className={`verdict${verdict === o.value ? " on" : ""}`} style={{ borderColor: verdict === o.value ? c.fg : undefined }}>
-              <input type="radio" name="verdict" value={o.value} checked={verdict === o.value} onChange={() => setVerdict(o.value)} />
+            <label key={o.value} className={`verdict${verdict === o.value ? " on" : ""}${problem ? " disabled" : ""}`} title={problem} style={{ borderColor: verdict === o.value ? c.fg : undefined }}>
+              <input type="radio" name="verdict" value={o.value} checked={verdict === o.value} disabled={problem !== undefined} onChange={() => setVerdict(o.value)} />
               <Chip option={o} />
               {o.requireComment && <span className="muted small">コメント必須</span>}
             </label>
@@ -185,6 +189,7 @@ export function ReviewPanel({ resourceId, rowKey, gc, initialVerdict, onClose, o
         />
       </label>
       {commentRequired && comment.trim() === "" && <p className="hint-error">「{option ? optionLabel(option) : ""}」にはコメントが必要です。</p>}
+      {verdictProblem && <p className="hint-error">{verdictProblem}。</p>}
       {info.reviewTargets.length > 0 && forwardMode === "ask" && (
         <label className="check">
           <input type="checkbox" checked={forward} onChange={(e) => setForward(e.target.checked)} />

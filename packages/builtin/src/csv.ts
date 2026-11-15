@@ -5,7 +5,8 @@
  * - ファイルが正。書き戻しでは、変更したフィールドの生のテキスト以外は 1 文字も変えない。
  * - 解析は「デコード済みの文字列」の上で行い、位置もすべて UTF-16 の添字で扱う。
  *   エンコードは最後に 1 回だけ行うので、多バイト文字（日本語、絵文字）でも位置がずれない。
- * - UTF-8 として不正なバイト列は、デコードし直すと元に戻らないため、例外にする。
+ * - 文字コードは UTF-8、UTF-16、Shift_JIS（設定の encoding。既定は BOM で UTF-16 を見分け、なければ UTF-8）。
+ *   その文字コードとして不正なバイト列と、書き戻すと元に戻らないバイト列は、例外にする。
  */
 import type {
   Change,
@@ -18,6 +19,8 @@ import type {
   ParsedDocument,
   ResourceRef,
 } from "@loc-studio/sdk";
+import { decodeText, encodeText, parseEncodingOption } from "./encoding.js";
+import type { TextEncoding } from "./encoding.js";
 
 // ---------------------------------------------------------------------------
 // 公開する型
@@ -35,6 +38,12 @@ export interface DelimitedOptions {
   stableId?: string;
   /** 区切り文字。フォーマットの既定を上書きする。 */
   delimiter?: string;
+  /**
+   * 文字コード。"auto"（既定）、"utf-8"、"utf-16le"、"utf-16be"、"shift_jis"。
+   * "auto" は、先頭に UTF-16 の BOM があればその UTF-16、なければ UTF-8 として読む。Shift_JIS は自動では見分けない。
+   * 新しいリソースは、この文字コードで作る（"auto" は UTF-8。UTF-16 は BOM つき）。
+   */
+  encoding?: string;
   /**
    * 変更に必要な列が見出しにないときの扱い。既定は "all-rows"。
    * - "all-rows": 見出しの末尾に列を足し、各レコードの末尾にも空のフィールドを足す（表を長方形に保つ）。
@@ -200,26 +209,7 @@ function scan(text: string, delim: string): ScanResult {
 // エンコーディング
 // ---------------------------------------------------------------------------
 
-interface Decoded {
-  text: string;
-  bom: boolean;
-}
-
-function decode(input: Uint8Array, resource: ResourceRef): Decoded {
-  let text: string;
-  try {
-    // ignoreBOM: BOM を文字として残し、自分で判定して書き戻しに使う。
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input);
-  } catch (e) {
-    throw new Error(`UTF-8 として読めないファイルです: ${resource.path}`, { cause: e });
-  }
-  if (text.charCodeAt(0) === 0xfeff) return { text: text.slice(1), bom: true };
-  return { text, bom: false };
-}
-
-function encode(text: string, bom: boolean): Uint8Array {
-  return new TextEncoder().encode(bom ? "﻿" + text : text);
-}
+// 読み書きは encoding.ts（decodeText / encodeText）が行う。
 
 // ---------------------------------------------------------------------------
 // 設定の読み取り
@@ -232,6 +222,7 @@ interface ResolvedOptions {
   stableId?: string;
   delimiter: string;
   addColumns: AddColumnsMode;
+  encoding: TextEncoding | "auto";
 }
 
 function readStringRecord(value: unknown, name: string, resource: ResourceRef): Record<string, string> | undefined {
@@ -270,7 +261,7 @@ function resolveOptions(ctx: FormatContext, defaultDelimiter: string): ResolvedO
       `設定の addColumns は "all-rows"、"header-only"、"never" のいずれかで指定してください: ${JSON.stringify(addColumns)}（${r.path}）`,
     );
   }
-  const resolved: ResolvedOptions = { delimiter, addColumns };
+  const resolved: ResolvedOptions = { delimiter, addColumns, encoding: parseEncodingOption(o.encoding, r.path) };
   const key = readOptionalString(o.key, "key", r);
   if (key !== undefined) resolved.key = key;
   const text = readStringRecord(o.text, "text", r);
@@ -374,6 +365,8 @@ function valueToString(value: unknown): string {
 interface Document {
   text: string;
   bom: boolean;
+  /** 読んだときの文字コード（書き戻しも同じ文字コードで行う）。 */
+  encoding: TextEncoding;
   scan: ScanResult;
   /** 見出しのレコードの添字。見出しがなければ -1。 */
   headerIndex: number;
@@ -381,12 +374,12 @@ interface Document {
 }
 
 function loadDocument(input: Uint8Array, ctx: FormatContext, opts: ResolvedOptions): Document {
-  const { text, bom } = decode(input, ctx.resource);
+  const { text, bom, encoding } = decodeText(input, opts.encoding, ctx.resource.path);
   const scanned = scan(text, opts.delimiter);
   const headerIndex = scanned.records.findIndex((r) => !r.blank);
   const headerRec = headerIndex >= 0 ? scanned.records[headerIndex] : undefined;
   const layout = headerRec ? buildLayout(headerRec.cells.map((c) => c.value), opts, ctx) : undefined;
-  return { text, bom, scan: scanned, headerIndex, layout };
+  return { text, bom, encoding, scan: scanned, headerIndex, layout };
 }
 
 function cellValue(rec: RawRecord, index: number): string {
@@ -821,7 +814,7 @@ function applyChanges(
       }
     }
   }
-  return encode(editor.output(), doc.bom);
+  return encodeText(editor.output(), doc.bom, doc.encoding);
 }
 
 // ---------------------------------------------------------------------------
@@ -860,7 +853,9 @@ function createDocument(entries: EntryData[], ctx: FormatContext, defaultDelimit
     seen.add(e.key);
     lines.push(getters.map((g) => toRaw(valueToString(g(e)), delim, false)).join(delim));
   }
-  return encode(lines.map((l) => l + "\n").join(""), false);
+  // UTF-16 は、あとで読むときに見分けられるよう BOM を付ける。
+  const encoding = opts.encoding === "auto" ? "utf-8" : opts.encoding;
+  return encodeText(lines.map((l) => l + "\n").join(""), encoding === "utf-16le" || encoding === "utf-16be", encoding);
 }
 
 // ---------------------------------------------------------------------------

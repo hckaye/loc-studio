@@ -58,6 +58,8 @@ Windows では何もしません（実行権限がない）。いちど権限が
 | [`run <actionId>`](#run) | アクションを実行 | 通す |
 | [`save`](#save) | 未保存の本文をすべて書き込む | 通す |
 | [`set <cellId> <値>`](#set) | セルの値を複数行へ一括で設定 | 通す |
+| [`entry add` / `remove` / `rename`](#entry) | 行を足す、消す、キーを変える | 通す |
+| [`resource create <path>`](#resource-create) | 行のない新しいリソースを作る | 通す |
 | [`user ...`](#サーバー管理) | サーバー（Web モード）のアカウントを管理 | サーバーの DB を直接開く |
 | [`member ...`](#サーバー管理) | プロジェクトごとの役割を管理 | 同上 |
 | [`server check`](#サーバー管理) | サーバーの設定、DB、プロジェクトを確かめる | 同上 |
@@ -204,7 +206,7 @@ Assets/Text/chapter01.csv
   ...
 ```
 
-進捗の分子は、`complete` の選択肢（既定では「確定」「承認」）の数です。言語 ID の位置の `-` は、行に 1 つの列（言語がない）を表します（`--json` では、言語 ID の位置が `"*"` になります）。`--resources` に一致するリソースがないときは、「対象のリソースがありません。」と出て、終了コードは 0 です。`--json` は `{ "resources": [{ "path", "entries", "unsaved", "issues", "progress": { 列 ID: { 言語 ID: { "complete", "total", "percent" } } } }] }` です。問題があっても終了コードは 0 です。読めないリソース（UTF-8 でない CSV など）は `パス  (読めません: 理由)` と出て（`--json` では該当リソースに `error`、全体に `unreadable`）、ほかのリソースは数え、終了コードは 1 です。
+進捗の分子は、`complete` の選択肢（既定では「確定」「承認」）の数です。設定の `grid.progressUnit` が `characters` か `words` のときは、行数ではなく原文の文字数（語数）で数え、先頭に「進捗は、原文の文字数で数えています。」と出ます（`--json` では、全体の `progressUnit` に単位が入ります）。言語 ID の位置の `-` は、行に 1 つの列（言語がない）を表します（`--json` では、言語 ID の位置が `"*"` になります）。`--resources` に一致するリソースがないときは、「対象のリソースがありません。」と出て、終了コードは 0 です。`--json` は `{ "resources": [{ "path", "entries", "unsaved", "issues", "progress": { 列 ID: { 言語 ID: { "complete", "total", "percent" } } } }] }` です。問題があっても終了コードは 0 です。読めないリソース（UTF-8 でない CSV など）は `パス  (読めません: 理由)` と出て（`--json` では該当リソースに `error`、全体に `unreadable`）、ほかのリソースは数え、終了コードは 1 です。
 
 ### generate
 
@@ -288,6 +290,47 @@ Assets/Text/chapter01.csv
 
 設定の `validation.blockComplete` が有効で、`complete` の選択肢への変更の対象に問題のある行は、書かずに `ブロック` に数えられ、キーが `ブロックされた行: ...` と出ます（終了コードは 0）。履歴には、`--user` で指定した名前（なければ解決されたユーザー名）で、`cause: bulk` として残ります。`--json` は `{ "resource", "cellId", "value", "updated", "blocked" }` です。
 
+### entry
+
+行を足す、消す、キーを変えるコマンドです。どれも、すぐリソースに書きます。`--resource`（パスまたは ID）は必須です。
+
+| 書き方 | 内容 |
+| --- | --- |
+| `entry add <key> --resource <path> [--after <key>] [--text <言語 ID>=<本文> ...]` | 行を足す。`--after` を省くと末尾に足す。`--text` は言語ごとに繰り返せる（本文に `=` があってもよい） |
+| `entry rename <key> <newKey> --resource <path>` | キーを変える。ステータス、レビュー、履歴、未保存の編集は、新しいキーに引き継ぐ |
+| `entry remove --resource <path> --keys <k1,k2>` | 行を消す。ステータスなどの記録は残り、同じキーの行を足し直すと戻る |
+
+```
+$ node apps/cli/dist/index.js entry add UI_RETRY --resource Assets/Text/system/ui.csv --after UI_OK --text ja=もう一度 --text JaEnglish=Retry --project /tmp/sample --user-data-dir /tmp/ud
+Assets/Text/system/ui.csv: 行 UI_RETRY を追加（5 行）
+$ node apps/cli/dist/index.js entry rename UI_RETRY UI_AGAIN --resource Assets/Text/system/ui.csv --project /tmp/sample --user-data-dir /tmp/ud
+Assets/Text/system/ui.csv: キー UI_RETRY を UI_AGAIN に変更（5 行）
+$ node apps/cli/dist/index.js entry remove --resource Assets/Text/system/ui.csv --keys UI_AGAIN,UI_GOLD --project /tmp/sample --user-data-dir /tmp/ud
+Assets/Text/system/ui.csv: 2 行を削除（UI_AGAIN, UI_GOLD）（3 行）
+```
+
+当てられない変更（すでにあるキー、ない行）は、理由を標準エラー出力に出して、終了コード 1 です。リソースは変わりません。複数の変更を 1 回で渡したとき（`remove` の `--keys`）は、1 つでも当てられなければ、どれも当てません。
+
+```
+$ node apps/cli/dist/index.js entry add UI_OK --resource Assets/Text/system/ui.csv --project /tmp/sample --user-data-dir /tmp/ud
+リソース Assets/Text/system/ui.csv の行を変えられませんでした（フォーマット "builtin.csv"）: add: キー「UI_OK」は既にあります（Assets/Text/system/ui.csv）。
+```
+
+行の変更に対応していないフォーマットのリソースでも、終了コード 1 で、リソースは変わりません。`--json` を付けると、当てた変更と、変更後の行数を返します。
+
+### resource create
+
+行のない新しいリソースを作ります。場所は、拡張子まで書きます。フォーマットは場所から決まり（設定の `formats` の `match`、またはフォーマットの `match`）、見出しなどの中身はフォーマットが作ります。
+
+```
+$ node apps/cli/dist/index.js resource create Assets/Text/dlc/new.csv --project /tmp/sample --user-data-dir /tmp/ud
+リソースを作りました: Assets/Text/dlc/new.csv
+$ cat /tmp/sample/Assets/Text/dlc/new.csv
+ID,JP,EN,CN,KR,MaxLen
+```
+
+すでにあるリソースは上書きせず、終了コード 1 です（`リソース Assets/Text/dlc/new.csv はすでにあります。`）。上の階層に出る書き方（`..`）、ツリーの対象に入らない場所、フォーマットの決まらない拡張子、作成に対応していないツリーやフォーマットでは、何も作らずに終わります（使い方の誤りは終了コード 2）。
+
 ## サーバー管理
 
 `user`、`member`、`server check` は、Web モード（[WEB-MODE.md](WEB-MODE.md)）のアカウントと権限を、画面なしで管理するコマンドです。最初の管理者の作成や、忘れたパスワードの再設定に使います。
@@ -334,7 +377,7 @@ $ printf 'correct-horse-1' | node apps/cli/dist/index.js user add 山田 --passw
 | コマンド | 内容 |
 | --- | --- |
 | `member list [--project <id>] [--json]` | 割り当ての一覧。ここでの `--project` は、プロジェクトのフォルダではなく、サーバーの設定の `projects[].id` |
-| `member set <project> <user> --role <viewer\|translator\|reviewer\|manager> [--languages a,b]` | 役割を割り当てる（すでにあれば置き換える。`--languages` を省くと言語の制限はなくなる） |
+| `member set <project> <user> --role <役割の ID> [--languages a,b]` | 役割を割り当てる（すでにあれば置き換える。`--languages` を省くと言語の制限はなくなる）。役割は、そのプロジェクトの役割（同梱の `viewer` / `translator` / `reviewer` / `manager` と、プロジェクト設定の `roles`）のどれか。ほかの値は終了コード 2 |
 | `member remove <project> <user>` | 割り当てを外す |
 
 `member set` と `member remove` には、サーバーの設定にあるプロジェクトだけを指定できます。`member set` のユーザーは存在するものだけです（なければ終了コード 2）。管理者はすべてのプロジェクトで manager として扱われるので、割り当ては要りません。
@@ -405,4 +448,5 @@ node apps/cli/dist/index.js validate --project . --fail-on error --json > valida
 - `generate` と `run` の例の `reverse` と `mystudio.trim` は、[plugins/generator.md](plugins/generator.md) と [plugins/action.md](plugins/action.md) の例のプラグインを置いた一時コピーでの出力です。
 - サーバー管理のコマンド（`server check`、`user add` / `list` / `set` / `passwd` / `delete`、`member set` / `list`、エラーになる場合を含む）は、一時フォルダの `server.json` と SQLite のサーバーの DB に対して実行しました。
 - `server check` は、Postgres のサーバーの DB（PostgreSQL 16）でも実行しました。ただし、出力に「プロジェクトを開く確認」の行が加わる前の版での実行で、いまの版ではやり直していません。
+- `entry add` / `rename` / `remove` と `resource create` の出力は、2026-11-15 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです。
 - `save` の競合（終了コード 1）と、20 行を超えるアクションのジョブは、実行していません。説明はコードに基づきます。

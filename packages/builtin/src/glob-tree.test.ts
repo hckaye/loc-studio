@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RevisionConflictError } from "@loc-studio/sdk";
 import type { TreeContext, TreeNode } from "@loc-studio/sdk";
+import { createMemoryDb, createPluginHost } from "@loc-studio/core";
+import { canSymlink } from "../../core/src/testing/symlinks.js";
 import { globTree } from "./glob-tree.js";
 
 let root: string;
@@ -19,7 +21,11 @@ async function put(rel: string, content = "x"): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, content);
 }
-const ctx = (options: Record<string, unknown> = {}): TreeContext => ({ projectRoot: root, options });
+const ctx = (options: Record<string, unknown> = {}): TreeContext => ({
+  projectRoot: root,
+  options,
+  host: createPluginHost({ db: createMemoryDb(), userName: () => "tester", projectRoot: root, env: {} }),
+});
 function flat(nodes: TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.kind === "folder" ? [`${n.id}/`, ...flat(n.children ?? [])] : [n.id]));
 }
@@ -71,13 +77,16 @@ describe("globTree.list", () => {
     expect(await globTree.list(ctx())).toEqual([]);
   });
 
-  it("シンボリックリンクは辿らない", async () => {
+  // Windows でも権限なしで作れる「ジャンクション」で、フォルダへのリンクを確かめる。
+  it("フォルダへのリンク（シンボリックリンク、ジャンクション）は辿らない", async () => {
     await put("real/a.csv");
-    try {
-      await symlink(path.join(root, "real"), path.join(root, "link"), "dir");
-    } catch {
-      return; // 権限がない環境ではスキップ
-    }
+    await symlink(path.join(root, "real"), path.join(root, "link"), "junction");
+    expect(flat(await globTree.list(ctx()))).toEqual(["real/", "real/a.csv"]);
+  });
+
+  it.skipIf(!canSymlink)("ファイルへのシンボリックリンクは、リソースとして出さない", async () => {
+    await put("real/a.csv");
+    await symlink(path.join(root, "real", "a.csv"), path.join(root, "linked.csv"));
     expect(flat(await globTree.list(ctx()))).toEqual(["real/", "real/a.csv"]);
   });
 });
@@ -137,5 +146,36 @@ describe("globTree.read / write", () => {
     await expect(globTree.write(bad, new Uint8Array([1]), ctx())).rejects.toThrow(/ルートの外/);
     const bad2 = { id: "x", path: "a/../../evil.csv", name: "evil.csv" };
     await expect(globTree.write(bad2, new Uint8Array([1]), ctx())).rejects.toThrow(/ルートの外/);
+  });
+});
+
+describe("globTree.create", () => {
+  const data = new TextEncoder().encode("key,ja\n");
+
+  it("親フォルダごと作り、ツリーに出るリソースを返す", async () => {
+    expect(await globTree.create!("text/dlc/new.csv", data, ctx())).toEqual({ id: "text/dlc/new.csv", path: "text/dlc/new.csv", name: "new.csv" });
+    expect(await readFile(path.join(root, "text", "dlc", "new.csv"), "utf8")).toBe("key,ja\n");
+    expect(flat(await globTree.list(ctx()))).toEqual(["text/", "text/dlc/", "text/dlc/new.csv"]);
+  });
+
+  it("すでにあるファイルは上書きせず、例外にする", async () => {
+    await put("a.csv", "元の中身");
+    await expect(globTree.create!("a.csv", data, ctx())).rejects.toThrow("すでにあります");
+    expect(await readFile(path.join(root, "a.csv"), "utf8")).toBe("元の中身");
+  });
+
+  it("ツリーの対象（include / exclude）に入らない場所には作らない", async () => {
+    await expect(globTree.create!("notes.txt", data, ctx())).rejects.toThrow("include");
+    await expect(globTree.create!("node_modules/x/a.csv", data, ctx())).rejects.toThrow("include");
+    await expect(globTree.create!("b.csv", data, ctx({ include: ["text/**/*.csv"] }))).rejects.toThrow("include");
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("ルートの外に出る書き方や、区切りの違うパスは受け付けない", async () => {
+    for (const bad of ["../out.csv", "a/../../out.csv", "/abs.csv", "a\\b.csv", "a//b.csv", "./a.csv", ""]) {
+      await expect(globTree.create!(bad, data, ctx()), bad).rejects.toThrow("相対パス");
+    }
+    expect(await readdir(root)).toEqual([]);
+    expect((await readdir(path.dirname(root))).filter((n) => n === "out.csv")).toEqual([]);
   });
 });

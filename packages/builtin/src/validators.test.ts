@@ -1,4 +1,4 @@
-import type { LanguageDef, TextSyntax, ValidateContext } from "@loc-studio/sdk";
+import type { LanguageDef, TextSyntax, ValidateContext, ValidationIssue, Validator } from "@loc-studio/sdk";
 import { describe, expect, it } from "vitest";
 import { bracesSyntax, tagsSyntax } from "./syntax.js";
 import {
@@ -48,8 +48,8 @@ function ctx(
   return c;
 }
 
-const run = (v: { validate: (c: ValidateContext) => unknown }, c: ValidateContext) =>
-  v.validate(c) as { code: string; message: string; range?: { start: number; end: number }; fix?: { value: string } }[];
+// 同梱のバリデータはすべて同期で、セルごとの validate を持つ。
+const run = (v: Validator, c: ValidateContext): ValidationIssue[] => v.validate!(c) as ValidationIssue[];
 const slice = (c: ValidateContext, r?: { start: number; end: number }) => (r ? c.value.slice(r.start, r.end) : undefined);
 
 describe("メタ情報", () => {

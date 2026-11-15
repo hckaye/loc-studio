@@ -17,6 +17,9 @@
 - [validators](#validators)
 - [generators](#generators)
 - [actions と review.targets](#actions-と-reviewtargets)
+- [hooks](#hooks)
+- [roles](#roles)
+- [editor](#editor)
 - [validation](#validation)
 - [storage](#storage)
 - [languageSets と grid](#languagesets-と-grid)
@@ -56,7 +59,7 @@ export default defineConfig({
 
 `loc-studio.project.json` も、画面のローカルモードでは信頼の確認の対象です。設定ファイルは、データの保存先、読み込むプラグインのフォルダ、生成器などの接続先、使う環境変数を決めます。確認なしで使うと、フォルダを開いただけで、設定に書かれた接続先へ環境変数の値を送らせたり、他人の用意した接続先を生成器に使わせたりできてしまうためです。
 
-確認するのは基盤の項目です。`storage`、`pluginDirs`、`tree`、`formats`、`syntaxes`、`sources`、`generators`、`actions`、`review` の 9 つのキーの中身（キーの順をそろえた形）と、ファイル全体で参照している `${env:NAME}` の名前の一覧を合わせて、ハッシュにします。信頼は、このハッシュごとに、この PC のローカル設定 `plugins.trust` に記録します。
+確認するのは基盤の項目です。`storage`、`pluginDirs`、`tree`、`formats`、`syntaxes`、`sources`、`generators`、`actions`、`hooks`、`review` の 10 のキーの中身（キーの順をそろえた形）と、ファイル全体で参照している `${env:NAME}` の名前の一覧を合わせて、ハッシュにします。信頼は、このハッシュごとに、この PC のローカル設定 `plugins.trust` に記録します。
 
 - 基盤の項目か `${env:NAME}` の参照が 1 つでもあれば、そのプロジェクトを最初に開いたときに 1 回確認します。`tree` や `formats` を書いたプロジェクトは、どれも確認の対象です。どちらもなければ、確認しません。
 - 信頼するまで、プロジェクトは制限された状態で開きます。環境変数は展開せず、共有 DB を開かず、ネットワークに接続せず、ツリーや生成器などの実装も作りません。信頼済みのコードの設定があっても、読み込みません。
@@ -83,13 +86,16 @@ export default defineConfig({
 | `columns` | `(ColumnDef \| ColumnUse)[]` | 列の並び。省略すると「キー」「本文」の 2 列 |
 | `generators` | `Record<string, UseRef>` | 生成器に名前と options を付ける |
 | `actions` | `UseRef[]` | 使うアクション |
+| `hooks` | `UseRef[]` | 書き込みの前後に呼ぶフック（書いた順に呼ぶ） |
+| `roles` | `Record<string, RoleDef>` | 役割の定義（Web モード）。同梱の役割に足すか、同じ ID で置き換える |
+| `editor` | `EditorConfig` | 本文の編集画面の設定（参照する言語と列、長さの数え方） |
 | `validators` | `(string \| ValidatorUse)[]` | 使うバリデータ |
-| `validation` | `{ blockComplete?: Severity \| false }` | 検証に関する設定 |
+| `validation` | `{ blockComplete?: Severity \| false, recheck?: boolean }` | 検証と「要確認」の印に関する設定 |
 | `review` | `{ targets?: UseRef[] }` | レビューの転載先 |
 | `storage` | `StorageConfig` | 共有 DB の設定 |
 | `localSettings` | `{ defaults?, enforce? }` | ローカル設定の初期値と固定 |
 | `languageSets` | `Record<string, LanguageId[]>` | 言語の表示セット |
-| `grid` | `{ pinCommon?, maxPinnedRatio? }` | 表の設定 |
+| `grid` | `{ pinCommon?, maxPinnedRatio?, progressColumn?, progressUnit? }` | 表とツリーの進捗の設定 |
 
 ## use と options
 
@@ -157,7 +163,7 @@ glob は picomatch で、ドットで始まる名前にも一致します。シ�
 
 並べた順に評価し、最初に一致したものを使います。どれにも一致しないリソースは読めない扱いになります（「扱えるフォーマットがありません」）。`formats` を省略すると、登録されたすべてのフォーマットを、後の層のものから順に `match()` で判定します。
 
-同梱は `builtin.csv`（`.csv`）と `builtin.tsv`（`.tsv`）です。どちらも UTF-8 だけを読み（BOM は保たれます）、UTF-8 として不正なバイト列はエラーにします。保存すると、変更したフィールドの生のテキストだけが変わり、ほかのバイトは変わりません（見出しにない列を足す場合は下記）。
+同梱は `builtin.csv`（`.csv`）と `builtin.tsv`（`.tsv`）です。文字コードは UTF-8、UTF-16、Shift_JIS を扱えます（下の `encoding`）。その文字コードとして不正なバイト列は、エラーにします。BOM の有無は保たれます。保存すると、変更したフィールドの生のテキストだけが変わり、ほかのバイトは変わりません（見出しにない列を足す場合は下記）。
 
 | `builtin.csv` / `builtin.tsv` の options | 型 | 意味 |
 | --- | --- | --- |
@@ -166,6 +172,7 @@ glob は picomatch で、ドットで始まる名前にも一致します。シ�
 | `columns` | `Record<string, 見出し>` | ファイル内の列。`"列 ID"`（行に 1 つ）か `"列 ID@言語 ID"` から見出しへの対応。値は文字列で、`source` が `"file"` の列（下記）やバリデータ（`maxLength`）が読む |
 | `stableId` | `string` | 安定 ID の列の見出し |
 | `delimiter` | `string` | 区切り文字。フォーマットの既定（CSV は `,`、TSV はタブ）を上書き |
+| `encoding` | `"auto"` \| `"utf-8"` \| `"utf-16le"` \| `"utf-16be"` \| `"shift_jis"` | 文字コード。既定 `"auto"`（下記） |
 | `addColumns` | `"all-rows"` \| `"header-only"` \| `"never"` | 書き込みに必要な列が見出しにないときの扱い。既定 `"all-rows"`（下記） |
 
 ```json
@@ -181,6 +188,16 @@ glob は picomatch で、ドットで始まる名前にも一致します。シ�
   }
 ]
 ```
+
+`encoding` は、リソースを読むときと書くときの文字コードです。
+
+- `"auto"`（既定）: 先頭に UTF-16 の BOM があればその UTF-16、なければ UTF-8 として読みます。Shift_JIS は自動では見分けません。
+- `"shift_jis"`: Shift_JIS（Windows-31J。`"sjis"`、`"cp932"` とも書けます）として読み書きします。フォルダごとに文字コードが違うときは、`formats` に `match` の違う項目を並べ、Shift_JIS のほうにだけ `encoding` を書きます（先に一致した項目を使います）。
+- 書き戻しは、読んだときと同じ文字コードで行います。変更していないセルのバイトは変わりません。
+- Shift_JIS のリソースに、Shift_JIS で表せない文字（ハングルや簡体字、絵文字など）を保存しようとすると、「文字「확」（U+D655）は Shift_JIS で表せません。」と出て保存は失敗し、ファイルは変わらず、編集は未保存のまま残ります。
+- Shift_JIS には、同じ文字を表すバイト列が 2 通りあるもの（「Ⅰ」などの機種依存文字の一部）があります。読んで書き戻すと元のバイト列に戻らないファイルは、読む時点でエラーにします（黙ってバイト列を変えないため）。UTF-8 か UTF-16 に変換してから使ってください。
+- 新しいリソース（リソースの作成）は、`encoding` の文字コードで作ります。`"auto"` は BOM なしの UTF-8、UTF-16 は BOM つきです。
+- 知らない名前を書くと、そのリソースは読めません（「設定の encoding は … のいずれかで指定してください」）。
 
 設定にある見出し（`text`、`columns`、`stableId`）がファイルにない場合、読み込みでは「設定にある列「FR」が見出しにありません。」の警告になり、その列は空として読みます。その列に空でない値を書くと、`addColumns` に従って列を足します。
 
@@ -221,7 +238,7 @@ UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gol
 | `label` | `string` | 表示名 |
 | `scope` | `"entry" \| "language"` | `entry`: 行に 1 つ。`language`: 言語ごとに 1 つ（必須） |
 | `languages` | `string[]` | 特定の言語だけに出す。省略すると全言語 |
-| `type` | `"string" \| "number" \| "boolean" \| { enum, default? }` | 値の型 |
+| `type` | `"string" \| "number" \| "boolean" \| "date" \| { enum, default? }` | 値の型。`"date"` は日付で、値は `"2026-11-15"` の形の文字列。画面では日付の入力欄で編集し、空にすると値を消す。形の違う値と、実在しない日付（2 月 30 日など）は、書き込みを `invalid` で断る |
 | `source` | `string` | 値の出所。`sources` のキー、登録された列ソースの ID、または `"file"` |
 | `of` | `string` | `kind: "review"` の対象の列の ID |
 | `actions` | `string[]` | `kind: "actions"` に並べるアクションの ID |
@@ -311,8 +328,27 @@ UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gol
 | `color` | 色。`gray`（`grey` も同じ）、`ink`（`black` も同じ）、`amber`（`yellow`、`orange` も同じ）、`red`、`green`、`blue`、`purple`、または `#rrggbb` などの CSS の色 |
 | `complete` | `true` の選択肢が進捗の分子になる（ツリーの進捗、`status` コマンド）。言語ごとの列では、`validation.blockComplete` の対象にもなる |
 | `requireComment` | レビュー列で、この判定にコメントを必須にする |
+| `from` | この値に変えられるのは、いまの値がここに並んだ値のときだけ。省略すると、どの値からでも変えられる |
+| `roles` | この値を選べる役割の ID（Web モード）。省略すると、その列を変えられる役割なら誰でも選べる |
 
 値のないセルは `default` の値とみなします。進捗は、`complete` の選択肢の数と全体の数の割合です。対象の値が変わった印の付いた値は、`complete` に数えません。
+
+`from` と `roles` で、状態の進め方をスタジオの決まりに合わせられます。次の例は、「確定」にできるのは「作業中」からだけで、役割が reviewer か manager の人だけ、という決まりです。
+
+```json
+"enum": [
+  { "value": "todo", "label": "未着手" },
+  { "value": "wip", "label": "作業中" },
+  { "value": "done", "label": "確定", "complete": true, "from": ["wip"], "roles": ["reviewer", "manager"] }
+]
+```
+
+- 決まりに合わない変更は、`blocked` のエラーで断ります。複数行の一括変更では、合わない行だけを飛ばして、ほかの行を変えます。画面では、選べない選択肢が理由つきで選べなくなります。
+- いまの値と同じ値にする変更は、遷移として扱いません。
+- レビュー列の判定にも使えます。レビュー列では、直前の判定がいまの値です。
+- `roles` は、ローカルモードとサーバーの管理者には効きません。`from` は誰にでも効きます。
+- フックが返した変更（[hooks](#hooks)）は、`from` と `roles` にかかわらず反映します。
+- 設定で書けない条件（行によって違う、ほかの列の値による、など）は、フックの `before` に書きます。
 
 ## sources
 
@@ -425,13 +461,113 @@ API キーは秘密情報 `llm.apiKey` から読みます（ローカル設定�
 
 このアクションの実装と、実行して確かめた結果は [plugins/action.md](plugins/action.md) にあります。
 
+## hooks
+
+```json
+"hooks": [
+  "mystudio.resetOnSave",
+  { "use": "mystudio.freeze", "options": { "keys": ["UI_OK"] } }
+]
+```
+
+書き込みの前後に呼ぶフック（プラグインが登録した `WorkflowHook`）を、呼ぶ順に並べます。フックは、書き込みを理由つきで止めたり、書き込みに続けてセルの値を変えたりできます。できごとの種類と書き方は [plugins/hook.md](plugins/hook.md) にあります。
+
+同梱のフックはありません。ここに書いていないフックは、登録されていても呼ばれません。
+
+## roles
+
+Web モードで、利用者にプロジェクトごとに割り当てる役割の定義です。ローカルモードでは使いません（1 人で、すべてできます）。
+
+同梱の役割は次の 4 つです。`roles` を書かなければ、この 4 つだけを使えます。
+
+| ID | 表示名 | できること（`can`） |
+| --- | --- | --- |
+| `viewer` | 閲覧 | なし（見るだけ） |
+| `translator` | 翻訳 | `edit`、`run` |
+| `reviewer` | レビュー | `review`、`run` |
+| `manager` | 管理 | `edit`、`review`、`run`、`structure`、`manage` |
+
+`roles` に書いた役割は、同梱の役割に足されます。同梱と同じ ID で書くと、その役割を丸ごと置き換えます（同梱の権限や表示名は引き継ぎません）。
+
+```json
+"roles": {
+  "lqa": {
+    "label": "LQA",
+    "can": ["edit", "review"],
+    "editColumns": ["textStatus"],
+    "reviewColumns": ["reviewStatus"]
+  },
+  "vendor": {
+    "label": "外注",
+    "can": ["edit", "run"],
+    "resources": ["Assets/Text/dlc/**"],
+    "actions": []
+  }
+}
+```
+
+| キー | 意味 |
+| --- | --- |
+| `label` | 画面に出す名前。省略すると役割の ID |
+| `can` | できること。必須。下の表の値の配列（見ることは、役割を持つ全員ができる） |
+| `editColumns` | `edit` で変えられる列の ID（本文の列も含む）。省略するとすべての列 |
+| `reviewColumns` | `review` で投稿できるレビュー列の ID。省略するとすべてのレビュー列 |
+| `actions` | `run` で実行できるアクションの ID。省略すると、設定の `actions` のすべて |
+| `generators` | `run` で生成できる生成列の ID。省略するとすべての生成列 |
+| `resources` | 見えるリソースのパス（glob）。省略するとすべて |
+
+絞り込み（`editColumns` など）は、省略すると制限なし、空の配列にすると「どれもできない」です。
+
+| `can` の値 | できること |
+| --- | --- |
+| `edit` | 本文の編集と保存、列の値の変更（レビュー列以外） |
+| `review` | レビューの投稿と転載 |
+| `run` | アクションと生成の実行 |
+| `structure` | 行の追加・削除・キーの変更、リソースの作成 |
+| `manage` | プロジェクト設定の一部の変更、プラグインの再読み込み、ほかの人が始めたジョブの取り消し |
+
+決まりは次のとおりです。
+
+- `resources` で見えないリソースは、ツリー、検索、統計、履歴など、どの読み出しでも「ない」ものとして扱います（あることを知らせません）。
+- 保存、すべて保存、未保存の変更の取り消しは、その役割が変えられる本文のドラフトだけを扱い、ほかの人のドラフトは残します。
+- 役割の定義の書き方が誤っていると（`can` が配列でない、知らない権限がある、など）、その役割では何も見えず、何もできません。プロジェクトを開いたときに警告が出ます。誤りで権限が広がらないよう、同梱の同じ ID の役割には戻しません。
+- 割り当てに残っている役割が設定から消えると、その利用者は、見ることも含めて何もできません。
+- サーバーの管理者は、役割の定義にかかわらず、すべてできます。
+- `roles` を変えられるのは、サーバーの管理者だけです（`manage` の権限では変えられません）。変えた定義は、次の呼び出しから効きます。
+- 言語の制限は、役割ではなく、利用者への割り当てに付けます（[WEB-MODE.md の 6 章](WEB-MODE.md#6-権限)）。
+
+## editor
+
+本文の編集画面（編集モーダル）の設定です。
+
+```json
+"editor": {
+  "referenceLanguages": ["JaEnglish"],
+  "referenceColumns": ["note", "maxLength", "backTranslation"],
+  "count": { "unit": "width", "skipTokens": true }
+}
+```
+
+| キー | 意味 |
+| --- | --- |
+| `referenceLanguages` | 参照欄に、基になる言語（`basedOn`）のほかに並べる言語の ID。原文が日本語で、英語を見ながら訳す言語があるときなどに使う |
+| `referenceColumns` | 参照欄に出す列の ID（行に 1 つの列と、編集中の言語の列）。省略すると、その言語の生成列だけ。空の配列にすると列を出さない |
+| `count.unit` | 本文の長さの数え方。`codepoints`（Unicode のコードポイント数。既定）、`utf16`（UTF-16 の単位の数）、`bytes`（UTF-8 のバイト数）、`width`（全角を 2、それ以外を 1 と数え、改行は数えない） |
+| `count.skipTokens` | `true` にすると、変数・タグ・制御コード（記法が分けたトークン）を数えない |
+
+参照欄では、基になる言語の本文の変数とタグに色が付き、押すと編集中の本文のカーソルの位置に入ります。
+
+プロジェクトにない言語や列、知らない数え方を書くと、その値は使わず、警告が出ます。ここで決まるのは編集画面の表示だけで、文字数の上限の検証（`builtin.maxLength`）の数え方は、バリデータの `options` で別に決めます。
+
 ## validation
 
 ```json
-"validation": { "blockComplete": "error" }
+"validation": { "blockComplete": "error", "recheck": true }
 ```
 
 `blockComplete` に重さ（`"error"` / `"warning"` / `"info"`）を指定すると、その言語の本文にその重さ以上の問題があるとき、言語ごとの列の値を `complete` の選択肢に変える操作が `blocked` になります（画面の一括変更では、止めた行が通知されます）。行に 1 つの列の値の変更と、レビューの判定の投稿は、止めません。`false`（既定）で無効です。
+
+`recheck` は、「要確認」の印を付けるかどうかです。既定は `true` で、訳文（`basedOn` のある言語）を保存したあとで基になる言語の本文が変わると、その訳文に印が付き、「要確認」の絞り込みに入ります。`false` にすると、印を付けず、絞り込みにも入りません。本文の変更への追従を、フックで列の値を戻すなど、別の決まりで行うスタジオ向けです。`false` のあいだも、訳文を保存したときの原文の版は記録するので、`true` に戻すと、そのあいだの変更にも正しく印が付きます。
 
 ## storage
 
@@ -490,6 +626,8 @@ Postgres では、表を `schema` の中に作ります。1 つのデータベ�
 | `languageSets` | 言語の切り替えパネルに出る表示セット（名前の後ろに ★）。値は言語 ID の配列 |
 | `grid.maxPinnedRatio` | 固定した列の幅の合計が、表の幅に占める割合の上限（既定 0.6）。超えると、後ろの固定を一時的に外す |
 | `grid.pinCommon` | 共通のグループ（キーなど）を左端に固定するか（既定 `true`）。`false` にすると、共通のグループも横にスクロールする |
+| `grid.progressColumn` | ツリーに進捗を出す列の ID（選択肢に `complete` のある、ステータスやレビューの列）。省略すると、最初のレビュー列、なければ最初の選択式の列 |
+| `grid.progressUnit` | 進捗の数え方。`rows`（行数。既定）、`characters`（原文の文字数。コードポイントの数）、`words`（原文を空白で区切った語数）。原文は、その言語の基になる言語（`basedOn`）の本文で、原文の言語自身の進捗は、その言語の本文で量る。行に 1 つの列は、最初の原文の言語の本文で量る。未保存の編集も量に入る。ツリーの進捗と、`status` コマンドの両方に効く。知らない値は警告にして、行数で数える |
 
 ## ローカル設定
 

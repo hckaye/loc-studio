@@ -195,6 +195,9 @@ describe("C5: Web モードの環境変数・プラグインのフォルダ・�
         env: {},
         config: { ...config, auth: { ...config.auth, mode: "proxy", proxySecretHeader: "x-proxy-secret", proxySecretEnv: "PROXY_SECRET" }, serverDb: { driver: "sqlite", path: path.join(tp.tmp, "s2.db") } },
         sdkPath: SDK_PATH,
+      }).finally(() => {
+        // 設定の誤りは DB を開く前に断る（開いたままのファイルを残さない）。
+        expect(existsSync(path.join(tp.tmp, "s2.db"))).toBe(false);
       }),
     ).rejects.toThrow(/PROXY_SECRET/);
   });

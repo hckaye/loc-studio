@@ -8,7 +8,8 @@ import type { WsContext } from "./context.js";
 import { defaultValue, errorText, GENERATED_CELLS_NS, GENERATED_NS, isFileColumn, TEXT_BASIS_NS } from "./context.js";
 import type { DocState } from "./documents.js";
 import { generatorCacheKey, textHash, valueHash } from "./hash.js";
-import { basicRowReader, issueKey, validateEntries } from "./issues.js";
+import { basicRowReader, issueKey, validatedColumns, validateEntries, validateMetaCells } from "./issues.js";
+import type { IssuesByEntry } from "./issues.js";
 
 /** 行の中のセルを表すキー。 */
 export const rowCellKey = (key: string, cellId: string): string => `${key}\u0000${cellId}`;
@@ -279,7 +280,7 @@ export async function buildCells(
   // 要再確認: 訳文を保存したときの、基になる言語の本文の版。
   const textCol = columns.find((c) => c.kind === "text");
   const basis = new Map<string, string>();
-  if (textCol) {
+  if (textCol && ctx.recheckEnabled()) {
     const translated = colLangs.get(textCol.id)!.filter((l) => l !== undefined && ctx.language(l)?.basedOn !== undefined);
     if (translated.length > 0 && entries.length > 0) {
       const refs: CellRef[] = [];
@@ -292,6 +293,23 @@ export async function buildCells(
 
   const issues: Map<string, IssueInfo[]> | undefined =
     spec.issues && textCol ? await validateEntries(ctx, doc, entries, spec.languages) : undefined;
+  // 本文以外の列の検証結果（対象の列が、返す列の中にあるときだけ）。
+  let metaIssues: IssuesByEntry | undefined;
+  if (spec.issues) {
+    const shown = new Set(columns.map((c) => c.id));
+    const metaCols = (await validatedColumns(ctx, doc)).filter((c) => shown.has(c.id));
+    if (metaCols.length > 0) {
+      metaIssues = await validateMetaCells(
+        ctx,
+        doc,
+        entries,
+        spec.languages,
+        metaCols,
+        (data, column, language) => currentValue(ctx, doc, data, column, language, values),
+        (data) => pageRowReader(ctx, doc, data, values),
+      );
+    }
+  }
 
   const baseHashCache = new Map<string, string>();
   const savedBaseHash = (data: EntryData, lang: LanguageId): string => {
@@ -353,11 +371,36 @@ export async function buildCells(
         } else {
           cell = { value: defaultValue(column) };
         }
+        if (column.kind !== "text") {
+          const found = metaIssues?.get(data.key)?.get(id);
+          if (found) cell.issues = found;
+        }
         cells[id] = cell;
       }
     }
     return cells;
   });
+}
+
+/**
+ * 本文以外の列の検証結果（列ソースの値を読んで確かめる）。検証の対象の列がなければ、何も読まずに空を返す。
+ * 表示用の buildCells を通さない読み出し（絞り込み、統計、一括の検証）が使う。
+ */
+export async function metaIssuesOf(ctx: WsContext, doc: DocState, entries: EntryData[], languages: LanguageDef[]): Promise<IssuesByEntry> {
+  const columns = await validatedColumns(ctx, doc);
+  if (columns.length === 0 || entries.length === 0) return new Map();
+  const langIds = languages.map((l) => l.id);
+  const specs = columns.filter((c) => ctx.columnSource(c)).map((c) => ({ column: c, languages: cellLanguages(ctx, c, langIds) }));
+  const values = specs.length > 0 ? await loadSourceValues(ctx, doc.resource.id, entries.map((e) => e.key), specs) : new Map<string, CellValue>();
+  return validateMetaCells(
+    ctx,
+    doc,
+    entries,
+    languages,
+    columns,
+    (data, column, language) => currentValue(ctx, doc, data, column, language, values),
+    (data) => pageRowReader(ctx, doc, data, values),
+  );
 }
 
 /** 計算列の値。compute が投げても表は壊さず、セルに error を付ける。 */

@@ -3,7 +3,7 @@ export { createWorkspace, DEFAULT_STORAGE_PATH } from "./workspace.js";
 export { dispatch, toRpcError } from "./rpc.js";
 export type { RpcResponse } from "./rpc.js";
 export { textHash, valueHash } from "./hash.js";
-export { METHOD_CAPABILITIES, ROLES, roleCan, permissionsFor } from "./permissions.js";
+export { METHOD_CAPABILITIES, roleCan, permissionsFor } from "./permissions.js";
 export type { Capability } from "./permissions.js";
 export { normalizeUserName, openAuthService } from "./auth/service.js";
 export type { AuthConfig, AuthService, AuthUser, LoginResult, Membership } from "./auth/service.js";

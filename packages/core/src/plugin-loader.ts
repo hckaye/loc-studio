@@ -248,7 +248,10 @@ const REQUIRED_FUNCTIONS: Record<ExtensionKind, string[]> = {
   column: [],
   generator: ["cacheParams", "input", "run"],
   action: ["run"],
-  validator: ["validate"],
+  // バリデータは validate か validateResource のどちらかがあればよい（下で確かめる）。
+  validator: [],
+  // フックは before か after のどちらかがあればよい（下で確かめる）。
+  hook: [],
   renderer: [],
 };
 
@@ -262,6 +265,7 @@ const REQUIRED_STRINGS: Record<ExtensionKind, string[]> = {
   generator: ["version"],
   action: ["label", "target"],
   validator: ["label", "version"],
+  hook: [],
   renderer: ["module"],
 };
 
@@ -337,6 +341,23 @@ export function validatePluginShape(plugin: unknown): string[] {
       }
       for (const key of REQUIRED_STRINGS[kind]) {
         if (typeof obj[key] !== "string") problems.push(`${label} の ${key} は文字列にしてください。`);
+      }
+      if (kind === "validator") {
+        for (const fn of ["validate", "validateResource"]) {
+          if (obj[fn] !== undefined && typeof obj[fn] !== "function") problems.push(`${label} の ${fn} は関数にしてください。`);
+        }
+        if (typeof obj.validate !== "function" && typeof obj.validateResource !== "function") {
+          problems.push(`${label} に関数 validate か validateResource のどちらかが必要です。`);
+        }
+      }
+      if (kind === "hook") {
+        for (const fn of ["before", "after"]) {
+          if (obj[fn] !== undefined && typeof obj[fn] !== "function") problems.push(`${label} の ${fn} は関数にしてください。`);
+        }
+        if (typeof obj.before !== "function" && typeof obj.after !== "function") problems.push(`${label} に関数 before か after のどちらかが必要です。`);
+        if (obj.events !== undefined && (!Array.isArray(obj.events) || obj.events.some((e) => typeof e !== "string"))) {
+          problems.push(`${label} の events は、できごとの種類の配列にしてください。`);
+        }
       }
       if (kind === "renderer" && typeof obj.module === "string") {
         const problem = rendererModuleProblem(obj.module);

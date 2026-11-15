@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { ApiError, ROLES, loadServerConfig, normalizeUserName, openServerRuntime, serverConfigPath } from "@loc-studio/server";
+import { ApiError, loadServerConfig, normalizeUserName, openServerRuntime, serverConfigPath } from "@loc-studio/server";
 import type { AuthService, AuthUser, ServerConfig, ServerRuntime } from "@loc-studio/server";
 import { UsageError } from "./args.js";
 import type { CliOptions } from "./args.js";
@@ -218,7 +218,7 @@ function requireProject(config: ServerConfig, id: string): void {
   }
 }
 
-async function cmdMember(auth: AuthService, config: ServerConfig, opts: CliOptions, io: CliIO): Promise<number> {
+async function cmdMember(rt: ServerRuntime, auth: AuthService, config: ServerConfig, opts: CliOptions, io: CliIO): Promise<number> {
   switch (opts.sub) {
     case "list": {
       if (opts.project !== undefined) requireProject(config, opts.project);
@@ -236,14 +236,16 @@ async function cmdMember(auth: AuthService, config: ServerConfig, opts: CliOptio
     case "set": {
       const [projectId, rawUser] = opts.args as [string, string];
       const user = normName(rawUser);
-      if (opts.role === undefined) throw new UsageError("member set には --role <viewer|translator|reviewer|manager> が必要です。");
-      if (!(ROLES as readonly string[]).includes(opts.role)) {
-        throw new UsageError(`--role は ${ROLES.join(" / ")} のどれかを指定してください: ${opts.role}`);
-      }
+      if (opts.role === undefined) throw new UsageError("member set には --role <役割の ID> が必要です（同梱の役割は viewer / translator / reviewer / manager）。");
       requireProject(config, projectId);
+      // 役割はプロジェクトごとに決まる（同梱の役割と、プロジェクト設定の roles）。
+      const roles = Object.keys((await rt.workspace(projectId)).roles());
+      if (!roles.includes(opts.role)) {
+        throw new UsageError(`--role は、プロジェクト "${projectId}" の役割（${roles.join(" / ")}）のどれかを指定してください: ${opts.role}`);
+      }
       await requireUser(auth, user);
       const m = await auth.setMembership(projectId, user, {
-        role: opts.role as (typeof ROLES)[number],
+        role: opts.role,
         ...(opts.languages ? { languages: opts.languages } : {}),
       });
       if (opts.json) json(io, { member: m });
@@ -392,7 +394,7 @@ export async function runAdminCommand(opts: CliOptions, io: CliIO): Promise<numb
   const { proxySecretEnv: _e, proxySecretHeader: _h, ...authRest } = config.auth;
   void _e;
   void _h;
-  return withRuntime(loc, io, { ...config, auth: authRest }, async (_rt, auth) =>
-    opts.command === "user" ? cmdUser(auth, opts, io) : cmdMember(auth, config, opts, io),
+  return withRuntime(loc, io, { ...config, auth: authRest }, async (rt, auth) =>
+    opts.command === "user" ? cmdUser(auth, opts, io) : cmdMember(rt, auth, config, opts, io),
   );
 }

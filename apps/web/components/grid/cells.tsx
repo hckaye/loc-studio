@@ -2,7 +2,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { ActionInfo, CellInfo, ProjectInfo, RowInfo } from "@loc-studio/server";
 import { EnumSelect } from "@/components/EnumSelect";
-import { canEditCell, canRun } from "@/lib/client/permissions";
+import { canEditCell, canGenerate, canRunAction, optionProblem } from "@/lib/client/permissions";
 import { DisplayValue } from "./display";
 import { RenderedCell } from "./renderers";
 import {
@@ -47,8 +47,6 @@ export function draftByOther(cell: CellInfo | undefined, me: string | undefined)
 
 export function TextMarks({ cell, me }: { cell: CellInfo | undefined; me?: string }) {
   if (!cell) return null;
-  const worst = worstSeverity(cell.issues);
-  const title = cell.issues?.map((i) => `[${SEVERITY_LABEL[i.severity]}] ${i.message}`).join("\n");
   const other = draftByOther(cell, me);
   return (
     <span className="marks">
@@ -66,16 +64,12 @@ export function TextMarks({ cell, me }: { cell: CellInfo | undefined; me?: strin
           ↻
         </span>
       )}
-      {worst && (
-        <span className={`mark mark-${worst}`} title={title} aria-label={`${SEVERITY_LABEL[worst]}: ${cell.issues?.length ?? 0} 件`}>
-          {worst === "error" ? "!" : worst === "warning" ? "▲" : "i"}
-        </span>
-      )}
+      <IssueMark issues={cell.issues} />
     </span>
   );
 }
 
-function InlineEditor({ initial, kind, onCommit, onCancel }: { initial: string; kind: "string" | "number"; onCommit(v: unknown): void; onCancel(): void }) {
+function InlineEditor({ initial, kind, date, onCommit, onCancel }: { initial: string; kind: "string" | "number"; date?: boolean; onCommit(v: unknown): void; onCancel(): void }) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
   const done = useRef(false);
@@ -96,13 +90,15 @@ function InlineEditor({ initial, kind, onCommit, onCancel }: { initial: string; 
         return;
       }
       onCommit(n);
-    } else onCommit(value);
+    } else if (date && value === "") onCommit(null); // 日付を空にしたら、値を消す
+    else onCommit(value);
   };
   return (
     <input
       ref={ref}
       className="inline-input"
       aria-label="値を編集"
+      {...(date ? { type: "date" } : {})}
       value={value}
       inputMode={kind === "number" ? "decimal" : undefined}
       onChange={(e) => {
@@ -169,10 +165,36 @@ export function ValueView({ info, row, gc, handlers, resourceId, className }: { 
   );
 }
 
-export const CellContent = memo(function CellContent({ info, row, gc, editing, handlers, actions, resourceId }: CellContentProps) {
+/** 検証で見つかった問題の印（いちばん重い問題の記号。ツールチップに全件）。 */
+export function IssueMark({ issues }: { issues: CellInfo["issues"] }) {
+  const worst = worstSeverity(issues);
+  if (!worst) return null;
+  const title = issues!.map((i) => `[${SEVERITY_LABEL[i.severity]}] ${i.message}`).join("\n");
+  return (
+    <span className={`mark mark-${worst}`} title={title} aria-label={`${SEVERITY_LABEL[worst]}: ${issues!.length} 件`}>
+      {worst === "error" ? "!" : worst === "warning" ? "▲" : "i"}
+    </span>
+  );
+}
+
+/** セルの中身と、本文以外の列の検証の印（本文の印は TextMarks が出す）。 */
+export const CellContent = memo(function CellContent(props: CellContentProps) {
+  const issues = props.gc.kind === "text" ? undefined : props.row.cells[props.gc.cellId]?.issues;
+  return (
+    <>
+      <CellBody {...props} />
+      {issues && issues.length > 0 && (
+        <span className="marks">
+          <IssueMark issues={issues} />
+        </span>
+      )}
+    </>
+  );
+});
+
+const CellBody = memo(function CellBody({ info, row, gc, editing, handlers, actions, resourceId }: CellContentProps) {
   const cell = row.cells[gc.cellId];
   const allowed = canEditCell(info, gc);
-  const run = canRun(info);
   switch (gc.kind) {
     case "key":
       return <span className="cell-key">{row.key}</span>;
@@ -199,6 +221,7 @@ export const CellContent = memo(function CellContent({ info, row, gc, editing, h
           label={gc.col.label ?? gc.col.id}
           {...(cell?.stale ? { stale: true } : {})}
           {...(!allowed.ok ? { disabled: true, title: allowed.reason } : {})}
+          optionProblem={(o) => optionProblem(info, gc.col, o, raw)}
           onChoose={(v) => (gc.kind === "review" ? handlers.onReviewChoose(row, gc, v) : handlers.onEnumChoose(row, gc, v))}
         />
       );
@@ -210,6 +233,7 @@ export const CellContent = memo(function CellContent({ info, row, gc, editing, h
           <InlineEditor
             initial={displayValue(cell?.value)}
             kind={gc.kind}
+            {...(gc.col.type === "date" ? { date: true } : {})}
             onCommit={(v) => handlers.onCommitMeta(row, gc, v)}
             onCancel={handlers.onCancelEdit}
           />
@@ -230,6 +254,7 @@ export const CellContent = memo(function CellContent({ info, row, gc, editing, h
         />
       );
     case "generated": {
+      const run = canGenerate(info, gc.col.id);
       const state = cell?.generated ?? (cell?.value ? "fresh" : "missing");
       const label = state === "fresh" ? "最新" : state === "stale" ? "古い" : "未生成";
       return (
@@ -268,24 +293,27 @@ export const CellContent = memo(function CellContent({ info, row, gc, editing, h
       return (
         <span className="cell-actions">
           {actions.length === 0 && <span className="muted small">—</span>}
-          {actions.map((a, i) => (
-            <button
-              key={a.id}
-              type="button"
-              className="mini-btn"
-              {...(i === 0 ? { "data-cell-primary": "" } : {})}
-              title={run.ok ? a.label : run.reason}
-              aria-label={a.label}
-              disabled={!run.ok}
-              onClick={(e) => {
-                e.stopPropagation();
-                handlers.onRunAction(row, gc, a);
-              }}
-              onDoubleClick={(e) => e.stopPropagation()}
-            >
-              {a.icon && [...a.icon].length <= 2 ? a.icon : a.label}
-            </button>
-          ))}
+          {actions.map((a, i) => {
+            const run = canRunAction(info, a.id);
+            return (
+              <button
+                key={a.id}
+                type="button"
+                className="mini-btn"
+                {...(i === 0 ? { "data-cell-primary": "" } : {})}
+                title={run.ok ? a.label : run.reason}
+                aria-label={a.label}
+                disabled={!run.ok}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlers.onRunAction(row, gc, a);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                {a.icon && [...a.icon].length <= 2 ? a.icon : a.label}
+              </button>
+            );
+          })}
         </span>
       );
     case "computed":

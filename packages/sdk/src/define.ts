@@ -8,6 +8,7 @@ import type {
   TextSyntax,
   TreeProvider,
   Validator,
+  WorkflowHook,
 } from "./types.js";
 
 /**
@@ -23,6 +24,7 @@ export const defineColumnSource = (source: ColumnSource): ColumnSource => source
 export const defineGenerator = (generator: Generator): Generator => generator;
 export const defineAction = (action: Action): Action => action;
 export const defineValidator = (validator: Validator): Validator => validator;
+export const defineHook = (hook: WorkflowHook): WorkflowHook => hook;
 
 /** セルの版が合わずに保存できなかったことを表す。利用者に両方の値を見せて選ばせる。 */
 export class StoreConflictError extends Error {

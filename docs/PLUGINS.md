@@ -11,7 +11,7 @@
 | 文書 | 内容 |
 | --- | --- |
 | このページ | 種類の選び方、作る手順、守る決まり、ID と名前、うまく動かないときの直し方 |
-| [plugins/validator.md](plugins/validator.md) | バリデータ（本文の検証） |
+| [plugins/validator.md](plugins/validator.md) | バリデータ（本文、列の値、リソース全体の検証） |
 | [plugins/syntax.md](plugins/syntax.md) | 本文の記法（変数、タグ、制御コードの見つけ方） |
 | [plugins/format.md](plugins/format.md) | フォーマット（ファイル形式の読み書き） |
 | [plugins/tree.md](plugins/tree.md) | ツリープロバイダー（リソースの一覧と読み書き。外部 API など） |
@@ -19,6 +19,7 @@
 | [plugins/source.md](plugins/source.md) | 列ソース（ホストの DB、外部 API、レビュー） |
 | [plugins/generator.md](plugins/generator.md) | 生成器（生成列の値） |
 | [plugins/action.md](plugins/action.md) | アクション（ボタンやコマンドで実行する操作） |
+| [plugins/hook.md](plugins/hook.md) | フック（書き込みの前後に呼ばれる処理） |
 | [plugins/renderer.md](plugins/renderer.md) | 独自描画（セルの見せ方を差し替えるブラウザ用のモジュール） |
 | [plugins/host.md](plugins/host.md) | ホストの機能（`ctx.host`。DB、秘密情報、`fetch` など） |
 | [plugins/loading.md](plugins/loading.md) | 読み込みの決まり（プラグインフォルダと層、`plugin.json`、TypeScript、SDK の import） |
@@ -26,11 +27,11 @@
 
 ## 拡張ポイントの種類
 
-拡張ポイントは 9 種類です。独自描画のモジュールだけはブラウザで動き、ほかはサーバー側（Node）で動きます。
+拡張ポイントは 10 種類です。独自描画のモジュールだけはブラウザで動き、ほかはサーバー側（Node）で動きます。
 
 | やりたいこと | 種類 | 書き方 |
 | --- | --- | --- |
-| 本文を検査して、問題を指摘する | validator | [validator.md](plugins/validator.md) |
+| 本文や列の値を検査して、問題を指摘する。ほかの行と比べて検査する | validator | [validator.md](plugins/validator.md) |
 | 本文の中の変数、タグ、制御コードを見分ける | syntax | [syntax.md](plugins/syntax.md) |
 | CSV / TSV 以外のファイル形式を読み書きする | format | [format.md](plugins/format.md) |
 | リソースをフォルダ以外（外部の API など）から読み書きする | tree | [tree.md](plugins/tree.md) |
@@ -38,6 +39,7 @@
 | 列の値を、ファイル以外（共有 DB、外部の API）に置く。レビューの投稿を受ける | source | [source.md](plugins/source.md) |
 | 生成列の値を作る（逆翻訳など） | generator | [generator.md](plugins/generator.md) |
 | ボタンやコマンドで、セルの値を変える。外部のチケットへのリンクを作る | action | [action.md](plugins/action.md) |
+| 書き込みの前後に、スタジオの決まりを足す（書き込みを止める、状態を戻す、書く前にチェックアウトする） | hook | [hook.md](plugins/hook.md) |
 | セルの見せ方を、自分で描いて差し替える | renderer | [renderer.md](plugins/renderer.md) |
 
 1 つのプラグインに、複数の種類の実装を並べられます。種類ごとの `Plugin` の欄と、設定で選ぶ場所は次のとおりです。
@@ -52,6 +54,7 @@
 | source | `sources` | `ColumnSource` | 列の `source: "<id>"`。`sources: { "<名前>": { "use": "<id>", "options": {} } }` で名前と `options` を付けて、列の `source` にその名前を書いてもよい |
 | generator | `generators` | `Generator` | `generators: { "<名前>": { "use": "<id>", "options": {} } }` と、生成列の `generator: "<名前>"` |
 | action | `actions` | `Action` | `actions: ["<id>"]`。レビューの転載先は `review.targets: ["<id>"]` |
+| hook | `hooks` | `WorkflowHook` | `hooks: ["<id>"]`、または `hooks: [{ "use": "<id>", "options": {} }]` |
 | renderer | `renderers` | `CellRenderer` | 列の `renderer: "<id>"` |
 
 設定の `options` は、実装の関数が呼ばれるたびに `ctx.options` として渡されます。設定の書き方の詳細は [CONFIG.md](CONFIG.md#use-と-options) にあります。
@@ -61,6 +64,9 @@
 | やりたいこと | 設定 |
 | --- | --- |
 | ステータスやレビューの選択肢、表示名、色を変える | 列の `type.enum` を上書きする（[CONFIG.md の列挙の選択肢](CONFIG.md#列挙enumの選択肢)） |
+| どの状態からどの状態に変えられるか、その値を誰が選べるかを決める | 選択肢の `from` と `roles`（同じ節） |
+| 役割を足す。役割ごとに、触れる列、見えるリソース、実行できるアクションを絞る | `roles`（[CONFIG.md の roles](CONFIG.md#roles)） |
+| 編集画面で参照する言語と列、本文の長さの数え方を変える | `editor`（[CONFIG.md の editor](CONFIG.md#editor)） |
 | 値をリンク、進み具合の棒、色見本、札で見せる | 列の `display`（[CONFIG.md の同梱の見せ方](CONFIG.md#同梱の見せ方display)） |
 | CSV / TSV の見出しと言語を対応づける | `formats[].options`（[CONFIG.md の formats](CONFIG.md#formats)） |
 | 共有 DB に置く列を足す | `{ "id": "...", "kind": "meta", "scope": "entry", "type": "string", "source": "builtin.db" }`（[CONFIG.md の columns](CONFIG.md#columns)） |
@@ -213,7 +219,7 @@ node apps/cli/dist/index.js validate --project <プロジェクト> --resources 
 
 | 種類 | 必須の関数 | 必須の文字列 |
 | --- | --- | --- |
-| validator | `validate` | `label` `version` |
+| validator | `validate` か `validateResource` のどちらか | `label` `version` |
 | syntax | `tokenize` | |
 | format | `match` `parse` `apply` | |
 | tree | `list` `read` `write` | |
@@ -221,6 +227,7 @@ node apps/cli/dist/index.js validate --project <プロジェクト> --resources 
 | source | `load` `save` | `saveMode` |
 | generator | `cacheParams` `input` `run` | `version` |
 | action | `run` | `label` `target` |
+| hook | `before` か `after` のどちらか | |
 | renderer | | `module`（プラグインのフォルダからの相対パス） |
 
 ## ID と名前

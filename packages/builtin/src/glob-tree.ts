@@ -111,6 +111,29 @@ export const globTree: TreeProvider = {
     return fileRevision(resolveInside(ctx.projectRoot, resource.path));
   },
 
+  async create(resourcePath: string, data: Uint8Array, ctx: TreeContext): Promise<ResourceRef> {
+    if (typeof resourcePath !== "string" || resourcePath === "" || resourcePath.includes("\\") || resourcePath.split("/").some((p) => p === "" || p === "." || p === "..")) {
+      throw new Error(`リソースの場所は、プロジェクトからの相対パス（区切りは "/"）で指定してください: ${JSON.stringify(resourcePath)}`);
+    }
+    // ツリーに出ない場所には作らない（作っても一覧に出ず、開けないため）。
+    const include = stringList(ctx.options["include"], DEFAULT_INCLUDE, "include");
+    const exclude = stringList(ctx.options["exclude"], DEFAULT_EXCLUDE, "exclude");
+    const opts = { dot: true };
+    if (!picomatch(include, opts)(resourcePath) || (exclude.length > 0 && picomatch(exclude, opts)(resourcePath))) {
+      throw new Error(`${resourcePath} は、ツリーの対象（include: ${include.join(", ")}）に入らない場所です。`);
+    }
+    const file = resolveInside(ctx.projectRoot, resourcePath);
+    try {
+      await mkdir(path.dirname(file), { recursive: true });
+      // "wx": すでにあれば失敗する（上書きしない）。
+      await writeFile(file, data, { flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`${resourcePath} はすでにあります。`);
+      throw new Error(`ファイルを作れませんでした: ${file}（${(e as Error).message}）`);
+    }
+    return { id: resourcePath, path: resourcePath, name: path.basename(file) };
+  },
+
   async write(resource: ResourceRef, data: Uint8Array, ctx: TreeContext, opts?: { expectedRevision?: string }): Promise<void> {
     const file = resolveInside(ctx.projectRoot, resource.path);
     const dir = path.dirname(file);

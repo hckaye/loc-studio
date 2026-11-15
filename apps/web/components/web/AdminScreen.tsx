@@ -5,15 +5,13 @@ import { Dialog } from "@/components/Dialog";
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { useToasts } from "@/components/context";
 import { createApi, postJson } from "@/lib/client/api";
-import { ROLE_LABEL } from "@/lib/client/permissions";
 
 /*
  * 管理の画面（Web モード、管理者だけ）。利用者の一覧と、プロジェクトごとの権限の割り当て。
  * 権限の確認はサーバーが行う（自分を外す・無効にする・削除するのは invalid）。画面でも自分の行の操作は無効にする。
  */
 
-const ROLES = ["viewer", "translator", "reviewer", "manager"] as const;
-type Role = (typeof ROLES)[number];
+type Role = string;
 const SELF_REASON = "自分自身には使えません";
 
 const admin = (op: string, body: unknown = {}) => postJson(`/api/admin/${op}`, body);
@@ -250,7 +248,7 @@ function MembersTab({ users }: { users: AuthUser[] }) {
   const [members, setMembers] = useState<Membership[] | null>(null);
   const [info, setInfo] = useState<ProjectInfo | null>(null);
   const [newUser, setNewUser] = useState("");
-  const [newRole, setNewRole] = useState<Role>("translator");
+  const [newRole, setNewRole] = useState<Role>("");
   const [pickFor, setPickFor] = useState<Membership | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -309,6 +307,14 @@ function MembersTab({ users }: { users: AuthUser[] }) {
     }
   };
 
+  // 割り当てられる役割は、プロジェクトごとに違う（同梱の役割と、プロジェクト設定の roles）。
+  const roles = useMemo(() => info?.roles ?? [], [info]);
+  useEffect(() => {
+    setNewRole((cur) => (roles.some((r) => r.id === cur) ? cur : (roles[0]?.id ?? "")));
+  }, [roles]);
+  /** 設定から消えた役割が割り当てに残っていても、選択肢に出して分かるようにする。 */
+  const roleOptions = (current?: string) =>
+    current !== undefined && !roles.some((r) => r.id === current) ? [...roles, { id: current, label: "設定にない役割" }] : roles;
   const assigned = useMemo(() => new Set((members ?? []).map((m) => m.user)), [members]);
   const candidates = users.filter((u) => !assigned.has(u.name));
   const langLabel = (id: string) => info?.languages.find((l) => l.id === id)?.label ?? id;
@@ -356,12 +362,12 @@ function MembersTab({ users }: { users: AuthUser[] }) {
                     className="input small"
                     aria-label={`${m.user} の役割`}
                     value={m.role}
-                    disabled={busy}
-                    onChange={(e) => void set(m.user, e.target.value as Role, m.languages, `「${m.user}」の役割を変えました`)}
+                    disabled={busy || !info}
+                    onChange={(e) => void set(m.user, e.target.value, m.languages, `「${m.user}」の役割を変えました`)}
                   >
-                    {ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {ROLE_LABEL[r]}（{r}）
+                    {roleOptions(m.role).map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}（{r.id}）
                       </option>
                     ))}
                   </select>
@@ -387,7 +393,7 @@ function MembersTab({ users }: { users: AuthUser[] }) {
         aria-label="利用者を割り当てる"
         onSubmit={(e) => {
           e.preventDefault();
-          if (newUser) void set(newUser, newRole, undefined, `「${newUser}」を割り当てました`).then(() => setNewUser(""));
+          if (newUser && newRole) void set(newUser, newRole, undefined, `「${newUser}」を割り当てました`).then(() => setNewUser(""));
         }}
       >
         <select className="input small" aria-label="割り当てる利用者" value={newUser} onChange={(e) => setNewUser(e.target.value)}>
@@ -398,14 +404,14 @@ function MembersTab({ users }: { users: AuthUser[] }) {
             </option>
           ))}
         </select>
-        <select className="input small" aria-label="割り当てる役割" value={newRole} onChange={(e) => setNewRole(e.target.value as Role)}>
-          {ROLES.map((r) => (
-            <option key={r} value={r}>
-              {ROLE_LABEL[r]}（{r}）
+        <select className="input small" aria-label="割り当てる役割" value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+          {roles.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.label}（{r.id}）
             </option>
           ))}
         </select>
-        <button type="submit" className="btn small primary" disabled={busy || !newUser}>
+        <button type="submit" className="btn small primary" disabled={busy || !newUser || !newRole}>
           割り当てる
         </button>
       </form>

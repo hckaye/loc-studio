@@ -76,7 +76,7 @@ export interface ProjectInfo {
   languages: LanguageDef[];
   columns: ColumnDef[];                       // 解決済み。並び順どおり
   languageSets: Record<string, LanguageId[]>;
-  grid: { pinCommon: boolean; maxPinnedRatio: number };
+  grid: { pinCommon: boolean; maxPinnedRatio: number; progressColumn?: string; progressUnit: "rows" | "characters" | "words" };   // progressUnit は進捗の数（stats の progress）の単位
   user: { name: string; source: SettingSource; locked: boolean };
   storage: { path: string; shared: boolean };
   actions: ActionInfo[];
@@ -87,7 +87,9 @@ export interface ProjectInfo {
   pluginErrors: PluginLoadError[];
   untrustedPlugins: number;                   // 信頼の確認を待っているプラグイン、コードの設定、設定ファイルの数
   restricted?: boolean;                       // 制限された状態（設定ファイルやコードの設定を信頼するまで）のとき true
-  permissions: { role: Role; can: { edit: boolean; review: boolean; run: boolean; manage: boolean }; languages?: string[] };  // 呼び出した利用者ができること（ローカルモードではすべて true、role は manager）
+  permissions: Permissions;  // 呼び出した利用者ができること（ローカルモードではすべて）。形は「Web モード」の節
+  roles: { id: string; label: string }[];  // 割り当てに選べる役割
+  editor: { referenceLanguages: LanguageId[]; referenceColumns?: string[]; count: { unit: "codepoints" | "utf16" | "bytes" | "width"; skipTokens: boolean } };  // 編集画面の設定（解決済み）
   renderers: { id: string; pluginName: string; hash: string }[];   // 読み込んだプラグインの独自描画。hash はモジュールのファイルの SHA-256
   changeSeq: number;
   localSettings: Record<string, unknown>;     // 解決済みのローカル設定の値（秘密情報は settings() と同じく伏せる）
@@ -130,7 +132,8 @@ export interface RowsRequest {
   offset: number;
   limit: number;
   search?: string;                // キーと、表示中の言語の本文の部分一致（大文字小文字を区別しない）
-  filters?: { cellId: string; values: unknown[] }[];   // 列の値での絞り込み（未設定は列の type.default とみなす）
+  sort?: { cellId: string; dir?: "asc" | "desc" };   // 並べ替え。省略時はリソースの中の順。数値は数の順、選択式の列は選択肢の並び順、ほかは文字の順（文字の中の数字は数として比べる）。値のない行は最後
+  filters?: { cellId: string; values?: unknown[]; contains?: string }[];   // 列の値での絞り込み。values: どれかと同じ（未設定は列の type.default とみなす）。contains: 値を文字にしたものに含む（大文字小文字を区別しない）
   onlyUntranslated?: boolean;     // 表示中の言語のどれかの本文が空
   onlyIssues?: Severity;          // 表示中の言語のどれかに、この重さ以上の問題がある
   onlyStale?: boolean;            // 表示中の言語に stale か needsRecheck のセルがある
@@ -165,6 +168,7 @@ export class ApiError extends Error { code: "not-found" | "conflict" | "invalid"
 - `textVersion({ hash }): { text?: string }`: 本文の版（SHA-256）から、その時点の全文を `kv("core.text-versions")` で引く。レビューの basisHash や履歴の版に使う。
 - `validateText({ resourceId, key, language, value }): IssueInfo[]`: 保存せずに 1 つのセルの本文を確かめる（入力中の確認用）。バリデータ、記法、重さの決め方は保存済みの本文と同じで、基の言語の本文はいまの値（ドラフト込み）。ドラフト、結果のキャッシュ、履歴、変更番号には触らない。知らないキー・言語・リソースは `not-found`。
 - `search({ query, languages?, limit? }): { resourceId: string; key: string; language?: LanguageId; snippet: string }[]`: リソースをまたぐ検索。
+- `tokens({ resourceId, texts }): TextToken[][]`: 本文を、そのリソースの記法でトークンに分ける（`texts` と同じ順・同じ数）。画面の色分けと、変数の差し込みに使う。`texts` は 200 個、合わせて 100 万文字まで。
 - `settings(): { local: SettingInfo[]; localFile: string; project: ProjectConfig; projectFromCode: string[]; projectFile: string }`
 - `plugins(): { plugins: PluginInfo[]; dirs: { dir: string; layer: PluginLayer; exists: boolean }[]; errors: PluginLoadError[]; warnings: string[]; untrusted: { kind: "plugin" | "config" | "settings"; path: string; layer: PluginLayer; hash: string; files: string[]; summary?: SummaryRow[] }[] }`: `untrusted` は信頼の確認を待っているプラグイン、コードの設定、設定ファイル（`files` はハッシュに入れたファイルの絶対パス）。`summary` は `kind: "settings"` のときだけあり、確認の画面に出す要約（`SummaryRow { label; value; host?; note? }`）。基盤の項目をすべて、options は葉ごとに 1 行で出す（`label` は「生成器 backTranslation の options.endpoint」のような項目のパス、`value` は JSON のスカラー。文字列は引用符つき）。値は展開する前の書かれたままの形で、接続文字列のパスワードは `****` に伏せる。ネットワークの URL として読める文字列には `host`（実際の接続先のホストとポート。`http:/host`、`http:\\host`、`user@host` の形でも本当の行き先）を付ける。`postgres:` / `postgresql:` / `socket:` の URL では、`host` はドライバー（`pg-connection-string`）と同じ決め方の接続先で、クエリの `host` / `port` が `//` のあとより優先される。ソケットのディレクトリはそのパスを、ホストやポートがないときは既定の `localhost` / `5432` を出し、それぞれ注意（PGHOST / PGPORT で変わることがある）を付ける。`hostaddr` は接続先を変えず（このアプリのドライバーは使わない）、注意を付ける。クエリの `host`、`hostaddr`、`port`、`sslrootcert`、`sslcert`、`sslkey`、`options`、`service`、`target_session_attrs` は、どれも「… の ?host」のような自分の行を必ず出す。この決め方は、`packages/store/src/pg-destination.test.ts` が 16 個の URL で `pg-connection-string` の `parse()` と比べている。`note` は、URL のユーザー情報、環境変数で決まる接続先やパス、秘密情報の名前らしい項目名（`secret`、`token`、`password`、`credential`、`api[-_]?key` を大文字小文字を区別せずに含むもの、英小文字か数字のあとに大文字の `Key` で終わるもの（`apiKey`、`accessKey`）。`key`、`hotkey`、`monkey` は含まない）の注意。制御文字と書字方向の制御文字は `<U+XXXX>`、500 文字を超える値は印を付けて切る。1 つの項目で葉が 40 を超えるときは、最初の 40 行、残りの数の行、残りのうち URL・パス・`${env:` を含む葉を出す。ツリー、生成器、アクション、列ソース、レビュー先のどれかがあれば、最後に秘密情報についての行を足す（`packages/core/src/settings-trust.ts`）。
 - `validate({ resourceIds?, languages? }): { resources: { resourceId: string; issues: (IssueInfo & { key: string; language?: string; cellId: string })[]; diagnostics: Diagnostic[]; error?: string }[]; summary: { error: number; warning: number; info: number; cells: number } }`: 一括のバリデーション（コマンドライン向け）。省略時は全リソース・全言語。各リソースは最新の中身を読み直して確かめる（本文はドラフト込み）。読めない・解析できない・知らないリソースはそのリソースの `error` に出し、ほかは続ける。`cells` は問題が 1 つ以上あるセルの数。知らない言語は `invalid`。
@@ -185,6 +189,8 @@ export class ApiError extends Error { code: "not-found" | "conflict" | "invalid"
 - `runAction({ actionId, resourceId, keys?, cellId?, language? }): { message?: string; open?: ActionResult["open"]; patched: number; jobId?: string; errors?: string[] }`: `target` が cell / row なら各行に対して実行し、返ってきた patches を `setText` / `setCell` と同じ規則で反映する（cause: action）。selection / file / column は 1 回だけ呼ぶ。対象が 20 行を超えるときはジョブにして `jobId` を返す。本文への patch は `setText` と同じくドラフトに積む（保存時の履歴の cause は action、causeRef はアクション id）。反映できなかった patch は `errors` に理由を返す（ほかの patch は反映する）。cell / row には keys が必要、cell / column には cellId が必要。`target: "review"` のアクションは forwardReview で使う。
 - `generate({ columnId, scope: "cell" | "selection" | "resource" | "project", resourceId?, keys?, languages?, dryRun? }): { jobId?: string; total: number; cached: number; toRun: number }`: 生成列の生成。`dryRun` なら件数だけ返す。キャッシュにある分は飛ばす。結果は `kv("core.generated")` に置き、セルごとに「最後に使った鍵と入力の版」を `cells("core.generated-cells")` に置く。1 件ずつ書くので、中断しても済んだ分は残る。`total` は入力のあるセルの数（`input` が null のセルは数えない）。同じ入力のセルは 1 回だけ生成器に渡す。ジョブは `batchSize`（既定 10）、`concurrency`（既定 1）、`retries`（既定 0）に従い、`cancelJob` はバッチの合間に止める。キャッシュの鍵 ＝ SHA-256(版の印 ＋ 生成器 id ＋ version ＋ stableStringify(cacheParams(options)) ＋ stableStringify(入力))。生成列の `generator` は設定 `generators` の名前（なければ生成器の id として引く）。
 - `cancelJob({ id }): JobInfo`
+- `editEntries({ resourceId, changes }): { entries: number; revision?: string }`: 行を足す・消す・キーを変える。`changes` は `{ type: "add", key, after?, text?, meta? }`、`{ type: "remove", key }`、`{ type: "rename", key, newKey }` の配列（1000 個まで）で、書いた順に当て、すぐリソースに書く。途中の変更が当てられなければ、1 つも書かない（`failed`）。フォーマットが行の変更に対応していないときも `failed` で、リソースは変えない。キーの変更では、未保存の編集、履歴、要再確認の記録、生成の記録を新しいキーに移し、列ソースの `onEntriesChanged` を設定の名前ごとに 1 回呼ぶ。削除では未保存の編集だけを捨て、共有 DB の記録は残す。フックは `entries.change` と `resource.write`。
+- `createResource({ path }): { resource: ResourceRef }`: 行のない新しいリソースを作る（`Format.create` と `TreeProvider.create`）。`path` は区切りが `/` の相対的な書き方だけ（`..`、絶対パス、`\` は `invalid`）。すでにあれば `conflict`。ツリーかフォーマットが作成に対応していなければ `invalid`。役割の `resources` で見えない場所は `forbidden`。
 
 ジョブを作るメソッド（`generate`、ジョブになる `runAction`）は、実行中・待機中のジョブが利用者ごとに 3 つ、ワークスペースごとに 20 個に達していたら `throttled`。
 - `setLocalSetting({ key, value }): SettingInfo[]`: 固定された項目は `locked`。`null` で削除。`user.name` を変えたら以後の記録に反映する。`secrets.<名前>` は秘密情報（一覧では伏せる。環境変数より優先）。`review.forwardOnPost` は `always` / `ask`（アプリの既定）/ `never`。
@@ -206,7 +212,7 @@ export class ApiError extends Error { code: "not-found" | "conflict" | "invalid"
 - ユーザー名は `resolveUserName`（enforce、cli、local、defaults、PC 名の順に探し、最初に見つかったもの）。記録にはその時点の名前を文字列で残す。
 - 同時に 2 つの書き込みが走っても壊れないよう、リソースごとの保存は直列にする（setText / discardDrafts / save / ファイル内の列の書き込み）。
 - ドラフト: `cells("core.drafts")`（その PC の DB）、セル ＝ リソース ＋ キー ＋ 本文の列 ＋ 言語、値 ＝ `{ value, savedHash, cause, causeRef? }`。savedHash はドラフトを作ったときの保存済みの本文の版。CellStore に削除がないので、消したドラフトは値 null で上書きする。保存は毎回リソースを読み直し、いまの本文の版が savedHash と違い、ドラフトとも違うセルを競合にする（いまの本文がドラフトと同じなら競合にせずドラフトを消す）。書く前に版が変わったら（`RevisionConflictError`）読み直して当て直す（上の規則）。
-- 要再確認: 訳文（`basedOn` のある言語）を保存したとき、保存後の基の言語の本文の版を共有 DB の `cells("core.text-basis")` に残す。記録があり、いまの（保存済みの）基の本文の版と違えば `needsRecheck`。ツールで保存していない訳文には付けない。
+- 要再確認: 訳文（`basedOn` のある言語）を保存したとき、保存後の基の言語の本文の版を共有 DB の `cells("core.text-basis")` に残す。記録があり、いまの（保存済みの）基の本文の版と違えば `needsRecheck`。ツールで保存していない訳文には付けない。設定の `validation.recheck` が `false` のときは、記録は続けるが、`needsRecheck` を付けず、`onlyStale` の絞り込みにも入れない。
 - stale: レビュー列は最新の投稿の basisHash と、対象の列（`of`）の同じ言語のいまの値の版（本文と文字列の値はそのままの SHA-256、それ以外の値は stableStringify した値の SHA-256）を比べる。`basis: "text"` の列は同じ言語の本文（ドラフト込み）と比べる。basisHash のない値は stale にしない。
 - 値のない enum の列は `type.default`（版なし）として返す。
 - 出所がファイル（`source` なし、または `"file"`）の meta 列は `setCell` ですぐリソースに書く（`expectedVersion` は使わない）。
@@ -224,7 +230,11 @@ export class ApiError extends Error { code: "not-found" | "conflict" | "invalid"
 - 書き込みの直前にも、役割と言語の制限を確かめる（アクションの変更点も同じ規則で、許されない変更点は `errors` に入る）。
 - `call.admin` でない呼び出しの結果とエラーは伏せる（`packages/server/src/redact.ts`。内容は [WEB-MODE.md の 8 章](WEB-MODE.md#8-ローカルモードとの違い)）。
 - `setLocalSetting` は利用者ごとの設定（`userSettings`）を書く。`user.name` と `secrets.*` は `forbidden`。`settings().localFile` は空文字。`user.name` は `{ value: アカウント名, source: "enforce", locked: true }`。
-- `cancelJob`: ほかの人が始めたジョブを止められるのは manager だけ（ほかは `forbidden`）。
+- `cancelJob`: ほかの人が始めたジョブを止められるのは、`manage` の権限がある役割だけ（ほかは `forbidden`）。
+- 役割の定義は `ws.roles()`（同梱の役割に、設定の `roles` を重ねたもの）。`dispatch` はこれでメソッドの権限を確かめ、`withCall` が呼び出しの間の役割の定義にする。設定にない役割は、すべてのメソッドが `forbidden`。`call.admin` は、役割の定義にかかわらずすべてできる。
+- 役割の `resources` で見えないリソースは、`ctx.docs.resource()` が `not-found` にする（リソースを受け取るメソッドは、必ずここを通す）。ツリー、検索、統計、一括の検証、プロジェクト全体の生成、`host.project.resources()` は、見えるリソースだけを対象にする。
+- `ProjectInfo.permissions` は `{ role, roleLabel?, can: { edit, review, run, structure, manage }, unrestricted?, languages?, editColumns?, reviewColumns?, actions?, generators? }`。`unrestricted` は、ローカルモードとサーバーの管理者で `true`（役割の定義と、選択肢の `roles` に縛られない）。`ProjectInfo.roles` は、割り当てに選べる役割の `{ id, label }` の一覧。
+- フックが返した変更（`cause: "hook"`）は、役割と、選択肢の `from` / `roles` を確かめずに反映する。記録に残る名前は、きっかけになった利用者のまま。
 
 ## 独自描画（CellRenderer）
 

@@ -30,8 +30,10 @@ export interface DocState {
   tokenize: (text: string) => TextToken[];
   /** 検索用に小文字にした値（必要になったときに作る）。 */
   lower?: { keys: string[]; texts: Map<LanguageId, string[]> };
-  /** バリデーションの結果。キーは `${key}\0${language}`。 */
+  /** セルごとのバリデーションの結果。キーは本文が `${key}\0${language}`、本文以外の列が `\u0001${key}\0${cellId}`。 */
   validation: Map<string, CachedValidation>;
+  /** リソース全体を見るバリデータの結果（stamp が同じ間だけ使う）。行のキー → セルの ID → 問題。 */
+  resourceIssues?: { stamp: string; byEntry: Map<string, Map<string, IssueInfo[]>> };
 }
 
 let versionSeq = 0;
@@ -58,9 +60,20 @@ export class DocumentCache {
   /**
    * @param revisionCheckIntervalMs 版の確認の間隔。この間は TreeProvider の revision を呼ばずにキャッシュを使う（0 で毎回確かめる）。
    */
+  /**
+   * 読み込んだ（または手元で解析して入れた）ドキュメントを受け取る。
+   * 安定 ID でキーの変更に追従する処理（structure.ts の followStableIds）を、ワークスペースがここに付ける。
+   */
+  onLoaded?: (state: DocState) => Promise<void>;
+
   constructor(
     private readonly project: () => Project,
     private readonly revisionCheckIntervalMs: number = DEFAULT_REVISION_CHECK_INTERVAL_MS,
+    /**
+     * いまの利用者からそのリソースが見えるか（役割の resources）。見えないリソースは、ないものとして扱う。
+     * キャッシュは利用者をまたいで共有するので、判定は読み出しのたびに行う。
+     */
+    readonly visible: (resource: ResourceRef) => boolean = () => true,
   ) {}
 
   /** ツリーを読み直し、リソースの一覧を更新する。 */
@@ -76,7 +89,7 @@ export class DocumentCache {
 
   async allResources(): Promise<ResourceRef[]> {
     if (!this.resourcesLoaded) await this.refreshTree();
-    return [...this.resources.values()];
+    return [...this.resources.values()].filter((r) => this.visible(r));
   }
 
   async resource(id: string): Promise<ResourceRef> {
@@ -86,7 +99,8 @@ export class DocumentCache {
       await this.refreshTree();
       r = this.resources.get(id);
     }
-    if (!r) throw new ApiError("not-found", `リソース "${id}" が見つかりません。`);
+    // 見えないリソースも「ない」と同じ答えにする（あることを知らせない）。
+    if (!r || !this.visible(r)) throw new ApiError("not-found", `リソース "${id}" が見つかりません。`);
     return r;
   }
 
@@ -136,7 +150,11 @@ export class DocumentCache {
         throw new ApiError("failed", err instanceof Error ? err.message : String(err));
       }
       const state = this.makeState(resource, read.document, read.format, read.options, read.revision);
-      if ((this.gens.get(resource.id) ?? 0) === gen) this.states.set(resource.id, state);
+      if ((this.gens.get(resource.id) ?? 0) === gen) {
+        // 外部でキーが変えられていたら、記録を新しいキーに移してから見せる。
+        await this.onLoaded?.(state);
+        this.states.set(resource.id, state);
+      }
       return state;
     })();
     this.loading.set(resource.id, p);

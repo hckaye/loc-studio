@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@loc-studio/sdk": ["packages/sdk/src/index.ts"],
+      "@loc-studio/core": ["packages/core/src/index.ts"],
+      "@loc-studio/builtin": ["packages/builtin/src/index.ts"],
+      "@loc-studio/store": ["packages/store/src/index.ts"],
+      "@loc-studio/plugin-llm": ["packages/plugin-llm/src/index.ts"],
+      "@loc-studio/server": ["packages/server/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/cli/src/**/*.ts"]
+}

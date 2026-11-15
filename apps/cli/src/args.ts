@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 
-export const COMMANDS = ["plugins", "tree", "validate", "whoami", "generate", "run", "status", "save", "set", "user", "member", "server", "help"] as const;
+export const COMMANDS = ["plugins", "tree", "validate", "whoami", "generate", "run", "status", "save", "set", "entry", "resource", "user", "member", "server", "help"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export type FailOn = "error" | "warning" | "info" | "never";
@@ -24,7 +24,11 @@ export interface CliOptions {
   resource?: string;
   /** run で cell / column 対象のアクションに使う列の ID。 */
   column?: string;
-  /** user / member / server のサブコマンド（list、add、check など）。 */
+  /** entry add で、この行の後ろに足す。 */
+  after?: string;
+  /** entry add で入れる本文（言語 ID → 本文）。 */
+  text?: Record<string, string>;
+  /** entry / resource / user / member / server のサブコマンド（add、list、check など）。 */
   sub?: string;
   /** サーバー管理: データフォルダと設定ファイル。 */
   dataDir?: string;
@@ -57,6 +61,8 @@ const COMMAND_ARITY: Record<Command, { count: number; names: string }> = {
   status: { count: 0, names: "" },
   save: { count: 0, names: "" },
   set: { count: 2, names: "<cellId> <value>" },
+  entry: { count: 0, names: "" },
+  resource: { count: 0, names: "" },
   user: { count: 0, names: "" },
   member: { count: 0, names: "" },
   server: { count: 0, names: "" },
@@ -65,6 +71,12 @@ const COMMAND_ARITY: Record<Command, { count: number; names: string }> = {
 
 /** サブコマンドを持つコマンドの、サブコマンドごとの位置引数の数（サブコマンドを除く）と書式。 */
 const SUBCOMMANDS: Partial<Record<Command, Record<string, { count: number; names: string }>>> = {
+  entry: {
+    add: { count: 1, names: "<key>" },
+    remove: { count: 0, names: "" },
+    rename: { count: 2, names: "<key> <newKey>" },
+  },
+  resource: { create: { count: 1, names: "<path>" } },
   user: {
     list: { count: 0, names: "" },
     add: { count: 1, names: "<name>" },
@@ -103,6 +115,10 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   status: ["languages", "resources", "user"],
   save: ["user"],
   set: ["resource", "keys", "user"],
+  "entry add": ["resource", "after", "text", "user"],
+  "entry remove": ["resource", "keys", "user"],
+  "entry rename": ["resource", "user"],
+  "resource create": ["user"],
   help: [],
 };
 
@@ -128,6 +144,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
         keys: { type: "string" },
         resource: { type: "string" },
         column: { type: "string" },
+        after: { type: "string" },
+        text: { type: "string", multiple: true },
         "data-dir": { type: "string" },
         "server-config": { type: "string" },
         "display-name": { type: "string" },
@@ -230,6 +248,16 @@ export function parseCliArgs(argv: string[]): CliOptions {
   }
   if (values.keys !== undefined) options.keys = values.keys.split(",").map((s) => s.trim()).filter((s) => s !== "");
   if (values.resource !== undefined) options.resource = values.resource;
+  if (values.after !== undefined) options.after = values.after;
+  if (values.text !== undefined) {
+    // --text <言語 ID>=<本文> を、言語ごとに 1 つずつ書く。本文に "=" があってもよい（最初の "=" で分ける）。
+    options.text = {};
+    for (const item of values.text) {
+      const at = item.indexOf("=");
+      if (at <= 0) throw new UsageError(`--text は <言語 ID>=<本文> の形で指定してください: ${item}`);
+      options.text[item.slice(0, at)] = item.slice(at + 1);
+    }
+  }
   if (values.column !== undefined) options.column = values.column;
   if (values.project !== undefined) options.project = values.project;
   if (values["app-dir"] !== undefined) options.appDir = values["app-dir"];
@@ -283,6 +311,8 @@ export const USAGE = `loc-studio — ゲーム向けローカライゼーショ�
   status     リソースごとの件数、未保存、問題、列ごと・言語ごとの進捗を表示する
   save       未保存の本文をすべてリソースに書く（競合があれば終了コード 1）
   set <cellId> <値>        セルの値を複数行へ一括で設定する（例: set textStatus@ko done --resource Assets/Text/chapter01.csv --keys A,B）
+  entry <add|remove|rename>  行を足す・消す・キーを変える（すぐリソースに書く）
+  resource create <path>   行のない新しいリソースを作る
   user <list|add|passwd|set|delete|logout>   サーバーのアカウントを管理する（Web モード。サーバーのマシンで実行する）
   member <list|set|remove>                   プロジェクトごとの役割を管理する（同上）
   server check   サーバーの設定、DB、プロジェクトのフォルダを確かめる（問題があれば終了コード 1）
@@ -319,6 +349,14 @@ set のオプション:
   --resource <path>       対象のリソース（パスまたは ID）。必須
   --keys <k1,k2>          対象のキー。必須
 
+entry のオプション:
+  entry add <key> --resource <path> [--after <key>] [--text <言語 ID>=<本文> ...]
+                          行を足す。--after を省くと末尾。--text は言語ごとに繰り返せる
+  entry remove --resource <path> --keys <k1,k2>
+                          行を消す（ステータスなどの記録は残り、同じキーの行を足し直すと戻る）
+  entry rename <key> <newKey> --resource <path>
+                          キーを変える（ステータス、レビュー、履歴、未保存の編集は新しいキーに引き継ぐ）
+
 サーバー管理（user / member / server check）の共通オプション:
   --data-dir <dir>        サーバーのデータフォルダ（環境変数 LOC_STUDIO_USER_DATA_DIR と同じ意味）
   --server-config <file>  サーバーの設定ファイル（既定: LOC_STUDIO_SERVER_CONFIG、なければ <データフォルダ>/server.json）
@@ -339,7 +377,7 @@ user のオプション:
 
 member のオプション:
   member list [--project <id>]               割り当ての一覧（--project はこのコマンドではプロジェクトの ID）
-  member set <project> <user> --role <viewer|translator|reviewer|manager> [--languages a,b]
+  member set <project> <user> --role <役割の ID> [--languages a,b]
   member remove <project> <user>
 
 generate / run / status / save / set は、画面と同じサービス層を通るので、キャッシュと履歴を画面と共有する。

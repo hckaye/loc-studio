@@ -150,7 +150,11 @@ describe("AuthService", () => {
     const auth = open();
     const admin = await auth.createUser({ name: "root", admin: true, displayName: "Root" });
     const kim = await auth.createUser({ name: "kim" });
-    await expect(auth.setMembership("p1", "kim", { role: "god" as never })).rejects.toMatchObject({ code: "invalid" });
+    // 認証サービスは役割の ID の形だけを確かめる（プロジェクトで定義された役割かどうかは ServerRuntime が確かめる）。
+    for (const bad of ["", "bad role", "a/b", "x".repeat(65), 1, undefined]) {
+      await expect(auth.setMembership("p1", "kim", { role: bad as never })).rejects.toMatchObject({ code: "invalid" });
+    }
+    expect(await auth.listMemberships({ user: "kim" })).toEqual([]);
     await expect(auth.setMembership("p1", "nobody", { role: "viewer" })).rejects.toMatchObject({ code: "not-found" });
     await auth.setMembership("p1", "kim", { role: "translator", languages: ["ko"] });
     await auth.setMembership("p2", "kim", { role: "viewer" });

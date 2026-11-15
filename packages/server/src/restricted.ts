@@ -6,14 +6,14 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { localSettingsPath, PROJECT_CONFIG_JSON, readLocalSettings, resolveSetting } from "@loc-studio/core";
+import { DEFAULT_ROLES, localSettingsPath, PROJECT_CONFIG_JSON, readLocalSettings, resolveSetting } from "@loc-studio/core";
 import type { SettingsLayers, UntrustedConfigError } from "@loc-studio/core";
 import type { ProjectConfig } from "@loc-studio/sdk";
 import { ApiError, WORKSPACE_METHODS } from "./api-types.js";
 import type { ProjectInfo, SettingInfo, Workspace, WorkspaceOptions } from "./api-types.js";
 import { currentCall, runWithCall } from "./call-context.js";
 import { errorText } from "./context.js";
-import { permissionsFor } from "./permissions.js";
+import { permissionsFor, roleList } from "./permissions.js";
 import { APP_SETTING_DEFAULTS } from "./settings-api.js";
 import { requireItems, requirePaths, untrustedInfo, verifyItems, writeTrustFile } from "./trust.js";
 import { sensitivePathsOf } from "./workspace.js";
@@ -68,7 +68,8 @@ export async function openRestricted(
       languages: [],
       columns: [],
       languageSets: {},
-      grid: { pinCommon: true, maxPinnedRatio: 0.6 },
+      grid: { pinCommon: true, maxPinnedRatio: 0.6, progressUnit: "rows" },
+      editor: { referenceLanguages: [], count: { unit: "codepoints", skipTokens: false } },
       user: { name: "", source: "app", locked: false },
       storage: { path: "", shared: false },
       actions: [],
@@ -82,6 +83,7 @@ export async function openRestricted(
       changeSeq: 0,
       localSettings: Object.fromEntries(localList().map((s) => [s.key, s.value])),
       permissions: permissionsFor(currentCall()),
+      roles: roleList(DEFAULT_ROLES),
       renderers: [],
     };
   }
@@ -151,6 +153,8 @@ export async function openRestricted(
     withCall<T>(call: Parameters<Workspace["withCall"]>[0], fn: () => Promise<T>): Promise<T> {
       return runWithCall({ call }, fn);
     },
+    // 設定を信頼するまでは、同梱の役割だけで確かめる。
+    roles: () => DEFAULT_ROLES,
     redaction: () => ({ paths: sensitivePathsOf(opts, { root, userDataDir, localFile }), log: (m: string) => console.error(m) }),
     async close() {
       closed = true;

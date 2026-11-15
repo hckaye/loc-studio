@@ -17,8 +17,8 @@
 | `postReview(post, ctx)` | レビュー列の出所にするとき必須 | レビューの投稿を保存して、`ReviewPost` を返す |
 | `listReviews(cell, ctx)` | レビュー列の出所にするとき必須 | そのセルの投稿を、新しい順に返す |
 | `addReviewLinks(reviewId, links, ctx)` | 任意 | 投稿に、外部へのリンク（チケットなど）を紐づける。レビューの転載先のアクションがリンクを返す場合に要る |
-| `onEntriesChanged(changes, resource, ctx)` | 任意 | キーの変更や削除に追従する。型にはあるが、いまのアプリはこの関数を呼ばない |
-| `subscribe(ctx, onChange)` | 任意 | 値の変更の通知。型にはあるが、いまのアプリはこの関数を呼ばない |
+| `onEntriesChanged(changes, resource, ctx)` | 任意 | 行の追加・削除・キーの変更に追従する。画面や API から行を変えたあとと、安定 ID でキーの変更に気づいたときに、当てた変更（`Change[]`）を受け取る。キーの変更（`rename`）では、値を新しいキーに移す |
+| `subscribe(ctx, onChange)` | 任意 | 値が外部で変わったら `onChange(cells)` を呼ぶ。戻り値は、通知をやめる関数。実装があれば、アプリはプロジェクトを開いている間これを呼び、知らせを受けると、覚えていた統計を捨てて画面に変更を伝える |
 
 `ctx`（`ColumnSourceContext`）は `{ projectRoot, options, host }` です。`options` は、設定の `sources.<名前>.options` に書いた値です。列の `source` に列ソースの登録 ID を直接書いた場合、`options` は空のオブジェクトです。
 

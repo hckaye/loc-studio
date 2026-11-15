@@ -179,7 +179,7 @@ describe("run: エラー", () => {
   it("2xx 以外はステータスと本文の先頭 300 文字、鍵は含めない", async () => {
     const body = "E".repeat(500);
     const { ctx } = makeCtx(async () => new Response(body, { status: 429 }), baseOptions, { "llm.apiKey": "sk-secret" });
-    const err = await gen.run([{ text: "a" }], ctx).catch((e: unknown) => e as Error);
+    const err = await gen.run([{ text: "a" }], ctx).then(() => new Error("失敗するはずの呼び出しが成功しました"), (e: unknown) => e as Error);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain("429");
     expect(err.message).toContain("E".repeat(300));
@@ -190,7 +190,7 @@ describe("run: エラー", () => {
   it("内容のない応答はエラー（鍵は含めない）", async () => {
     for (const raw of [JSON.stringify({ choices: [] }), JSON.stringify({ choices: [{ message: { content: "  " } }] }), "not json"]) {
       const { ctx } = makeCtx(async () => new Response(raw, { status: 200 }), baseOptions, { "llm.apiKey": "sk-secret" });
-      const err = await gen.run([{ text: "a" }], ctx).catch((e: unknown) => e as Error);
+      const err = await gen.run([{ text: "a" }], ctx).then(() => new Error("失敗するはずの呼び出しが成功しました"), (e: unknown) => e as Error);
       expect(err).toBeInstanceOf(Error);
       expect(err.message).not.toContain("sk-secret");
     }
@@ -200,7 +200,7 @@ describe("run: エラー", () => {
     const { ctx } = makeCtx(async () => {
       throw new Error("ECONNREFUSED");
     }, baseOptions, { "llm.apiKey": "sk-secret" });
-    const err = await gen.run([{ text: "a" }], ctx).catch((e: unknown) => e as Error);
+    const err = await gen.run([{ text: "a" }], ctx).then(() => new Error("失敗するはずの呼び出しが成功しました"), (e: unknown) => e as Error);
     expect(err.message).toContain("ECONNREFUSED");
     expect(err.message).not.toContain("sk-secret");
   });

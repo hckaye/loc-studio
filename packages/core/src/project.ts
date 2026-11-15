@@ -15,6 +15,7 @@ import type {
   PluginHost,
   ProjectConfig,
   ResourceRef,
+  RoleDef,
   TextSyntax,
   TextToken,
   TreeContext,
@@ -27,6 +28,8 @@ import { cloneColumn, DEFAULT_COLUMNS, resolveColumns, resolveColumnSource } fro
 import type { ResolvedColumnSource } from "./columns.js";
 import { loadProjectConfig } from "./config.js";
 import { createPluginHost } from "./host.js";
+import { createProjectReader } from "./project-reader.js";
+import { resolveRoles } from "./roles.js";
 import { createMemoryDb } from "./memory-db.js";
 import { defaultPluginDirs, loadPluginDirs } from "./plugin-loader.js";
 import type { PluginCandidate } from "./plugin-loader.js";
@@ -106,8 +109,23 @@ export interface Project {
   readBytes(resource: ResourceRef): Promise<Uint8Array>;
   /** リソースのバイト列をそのまま書く（TreeProvider 経由）。 */
   writeBytes(resource: ResourceRef, data: Uint8Array, opts?: WriteResourceOptions): Promise<void>;
+  /**
+   * 新しいリソースの中身（行のない状態）を作る。場所からフォーマットを決め、Format.create で作る。
+   * ツリーが作成に対応していない（TreeProvider.create がない）、フォーマットが決まらない、
+   * フォーマットが作成に対応していない（Format.create がない）ときは、理由の分かる例外にする。
+   */
+  newResourceBytes(resourcePath: string): { data: Uint8Array; format: Format };
+  /** 新しいリソースを作る（TreeProvider.create）。すでにあれば例外。 */
+  createResource(resourcePath: string, data: Uint8Array): Promise<ResourceRef>;
+  /**
+   * リソースの変更の監視を始める（TreeProvider.watch）。戻り値は監視をやめる関数。
+   * ツリーが監視に対応していなければ undefined。
+   */
+  watchResources(onChange: (resource: ResourceRef) => void): (() => void) | undefined;
   tokenizer(format?: Format): (text: string) => TextToken[];
   resolveValidators(): ResolvedValidator[];
+  /** 役割の定義（同梱の役割に設定の `roles` を重ねたもの）。 */
+  roles(): Record<string, RoleDef>;
   reload(): Promise<void>;
 }
 
@@ -193,6 +211,7 @@ interface ProjectState {
   untrustedPlugins: PluginCandidate[];
   warnings: string[];
   columns: ColumnDef[];
+  roles: Record<string, RoleDef>;
 }
 
 async function buildState(root: string, opts: OpenProjectOptions): Promise<ProjectState> {
@@ -223,7 +242,8 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
   }
 
   const resolved = resolveColumns(config, registry);
-  const warnings = [...dirWarnings, ...registry.warnings, ...checkConfigRefs(config, registry), ...resolved.warnings];
+  const roles = resolveRoles(config, resolved.columns);
+  const warnings = [...dirWarnings, ...registry.warnings, ...checkConfigRefs(config, registry), ...resolved.warnings, ...roles.warnings];
   if (loaded.codeError) warnings.unshift(loaded.codeError);
   if (loaded.untrustedCode) untrusted.unshift(loaded.untrustedCode);
   return {
@@ -235,6 +255,7 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
     untrustedPlugins: untrusted,
     warnings,
     columns: resolved.columns,
+    roles: roles.roles,
   };
 }
 
@@ -284,6 +305,7 @@ function checkConfigRefs(config: ProjectConfig, registry: PluginRegistry): strin
   config.formats?.forEach((f, i) => missing("format", f.use, `formats[${i}]`));
   config.syntaxes?.forEach((s, i) => missing("syntax", s, `syntaxes[${i}]`));
   config.validators?.forEach((v, i) => missing("validator", typeof v === "string" ? v : v.use, `validators[${i}]`));
+  config.hooks?.forEach((h, i) => missing("hook", normalizeUse(h).use, `hooks[${i}]`));
   for (const [name, ref] of Object.entries(config.sources ?? {})) missing("source", normalizeUse(ref).use, `sources.${name}`);
   return warnings;
 }
@@ -406,6 +428,38 @@ class ProjectImpl implements Project {
     await provider.write(resource, data, ctx, opts?.expectedRevision !== undefined ? { expectedRevision: opts.expectedRevision } : undefined);
   }
 
+  newResourceBytes(resourcePath: string): { data: Uint8Array; format: Format } {
+    const { provider } = this.treeProvider();
+    if (typeof provider.create !== "function") {
+      throw new Error(`ツリー "${provider.id}" は、新しいリソースの作成に対応していません。`);
+    }
+    const name = resourcePath.split("/").pop() ?? resourcePath;
+    const candidate: ResourceRef = { id: resourcePath, path: resourcePath, name };
+    const found = this.formatFor(candidate);
+    if (!found) {
+      const ids = this.registry.list("format").map((e) => `"${e.id}"`).join(", ") || "なし";
+      throw new Error(`リソース ${resourcePath} を扱えるフォーマットがありません（登録されているフォーマット: ${ids}）。拡張子と、設定の formats を確かめてください。`);
+    }
+    if (typeof found.format.create !== "function") {
+      throw new Error(`フォーマット "${found.format.id}" は、新しいリソースの作成に対応していません。`);
+    }
+    return { data: found.format.create([], this.formatContext(candidate, found.options)), format: found.format };
+  }
+
+  async createResource(resourcePath: string, data: Uint8Array): Promise<ResourceRef> {
+    const { provider, ctx } = this.treeProvider();
+    if (typeof provider.create !== "function") {
+      throw new Error(`ツリー "${provider.id}" は、新しいリソースの作成に対応していません。`);
+    }
+    return provider.create(resourcePath, data, ctx);
+  }
+
+  watchResources(onChange: (resource: ResourceRef) => void): (() => void) | undefined {
+    const { provider, ctx } = this.treeProvider();
+    if (typeof provider.watch !== "function") return undefined;
+    return provider.watch(ctx, onChange);
+  }
+
   async revision(resource: ResourceRef): Promise<string | undefined> {
     const { provider, ctx } = this.treeProvider();
     if (!provider.revision) return undefined;
@@ -486,6 +540,10 @@ class ProjectImpl implements Project {
     return result;
   }
 
+  roles(): Record<string, RoleDef> {
+    return this.state.roles;
+  }
+
   async reload(): Promise<void> {
     // 読み直しに失敗したら例外にして、いまの状態はそのまま残す。
     const next = await buildState(this.root, this.opts);
@@ -500,7 +558,17 @@ export async function openProject(projectRoot: string, opts: OpenProjectOptions 
   const root = path.resolve(projectRoot);
   const state = await buildState(root, opts);
   const userName = (): string => "unknown";
+  // ホストの project（リソースと行を読む窓口）は、これから作るプロジェクト自身を読む。
+  const self: { project?: Project } = {};
   const host =
-    opts.host ?? createPluginHost({ db: createMemoryDb({ userName }), userName, projectRoot: root, env: opts.env ?? process.env });
-  return new ProjectImpl(root, state, opts, host);
+    opts.host ??
+    createPluginHost({
+      db: createMemoryDb({ userName }),
+      userName,
+      projectRoot: root,
+      env: opts.env ?? process.env,
+      project: createProjectReader({ project: () => self.project! }),
+    });
+  self.project = new ProjectImpl(root, state, opts, host);
+  return self.project;
 }

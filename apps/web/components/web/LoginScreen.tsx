@@ -36,8 +36,10 @@ export function LoginScreen({ onLoggedIn, notice }: { onLoggedIn(): void; notice
       if (isRpcError(err, "throttled")) {
         const ms = (err.data as { retryAfterMs?: unknown } | undefined)?.retryAfterMs;
         if (typeof ms === "number") {
-          setNow(Date.now());
-          setWaitUntil(Date.now() + ms);
+          // 時刻は 1 回だけ取る。2 回取ると、そのあいだに時計が進んだ分だけ残りが長く出る（30 秒が「あと 31 秒」になる）。
+          const at = Date.now();
+          setNow(at);
+          setWaitUntil(at + ms);
         }
       }
     } finally {

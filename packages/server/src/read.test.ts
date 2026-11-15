@@ -30,7 +30,7 @@ describe("info", () => {
     expect(info.blockComplete).toBe(false);
     expect(info.pluginErrors).toEqual([]);
     expect(typeof info.changeSeq).toBe("number");
-    expect(info.grid).toEqual({ pinCommon: true, maxPinnedRatio: 0.6 });
+    expect(info.grid).toEqual({ pinCommon: true, maxPinnedRatio: 0.6, progressUnit: "rows" });
   });
 });
 
@@ -199,6 +199,100 @@ describe("rows", () => {
     ).rejects.toMatchObject({ code: "not-found" });
   });
 
+  it("列の値の「含む」での絞り込み（大文字小文字を区別しない。数値は文字にして比べる。values と一緒に書けば両方に合う行）", async () => {
+    const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+    await tp.patchConfig({ columns: [...config.columns, { id: "maxLength", kind: "meta", scope: "entry", type: "string" }, { use: "builtin.length", id: "len" }] });
+    await ws.reloadPlugins();
+    const keys = async (filters: { cellId: string; values?: unknown[]; contains?: string }[], languages = ["ja"]) =>
+      (await ws.rows({ resourceId: UI, languages, offset: 0, limit: 50, filters })).rows.map((x) => x.key);
+    // 上限（リソースの中の列）: 4 / 6 / 12 / 空
+    expect(await keys([{ cellId: "maxLength", contains: "1" }])).toEqual(["UI_SAVE_CONFIRM"]);
+    expect(await keys([{ cellId: "maxLength", contains: "" }])).toEqual(["UI_OK", "UI_CANCEL", "UI_SAVE_CONFIRM", "UI_GOLD"]);
+    // 計算列（文字数）は数値を文字にして比べる。決定 = 2、キャンセル = 5、セーブしますか？ = 8、所持金：{gold} G = 12。
+    expect(await keys([{ cellId: "len@ja", contains: "2" }])).toEqual(["UI_OK", "UI_GOLD"]);
+    expect(await keys([{ cellId: "len@ja", contains: "12" }])).toEqual(["UI_GOLD"]);
+    expect(await keys([{ cellId: "len@ja", contains: "8" }])).toEqual(["UI_SAVE_CONFIRM"]);
+    // values と contains の両方: 両方に合う行だけ。
+    await ws.setCell({ resourceId: UI, key: "UI_SAVE_CONFIRM", cellId: "textStatus@ko", value: "done" });
+    expect(await keys([{ cellId: "textStatus@ko", values: ["done", "todo"], contains: "DON" }])).toEqual(["UI_SAVE_CONFIRM"]);
+    await expect(keys([{ cellId: "maxLength" }])).rejects.toMatchObject({ code: "invalid" });
+    await expect(keys([{ cellId: "maxLength", contains: 1 as never }])).rejects.toMatchObject({ code: "invalid" });
+  });
+
+  describe("並べ替え（sort）", () => {
+    const sorted = async (sort: { cellId: string; dir?: "asc" | "desc" }, extra: Record<string, unknown> = {}) =>
+      (await ws.rows({ resourceId: UI, languages: ["ja", "ko"], offset: 0, limit: 50, sort, ...extra })).rows.map((x) => x.key);
+
+    beforeEach(async () => {
+      const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+      await tp.patchConfig({
+        columns: [...config.columns, { id: "maxLength", kind: "meta", scope: "entry", type: "string" }, { use: "builtin.length", id: "len" }],
+      });
+      await ws.reloadPlugins();
+    });
+
+    it("指定がなければリソースの中の順。キーの列で並べ替えられ、降順は逆になる", async () => {
+      expect((await ws.rows({ resourceId: UI, languages: ["ja"], offset: 0, limit: 50 })).rows.map((x) => x.key)).toEqual(["UI_OK", "UI_CANCEL", "UI_SAVE_CONFIRM", "UI_GOLD"]);
+      expect(await sorted({ cellId: "key" })).toEqual(["UI_CANCEL", "UI_GOLD", "UI_OK", "UI_SAVE_CONFIRM"]);
+      expect(await sorted({ cellId: "key", dir: "desc" })).toEqual(["UI_SAVE_CONFIRM", "UI_OK", "UI_GOLD", "UI_CANCEL"]);
+    });
+
+    it("数値は数の順（文字の順ではない）。文字の中の数字も数として比べ、値のない行は昇順でも降順でも最後", async () => {
+      // 文字数（計算列。数値）: 決定 = 2、キャンセル = 5、セーブしますか？ = 8、所持金：{gold} G = 12。文字の順なら 12 が 2 の前に来る。
+      expect(await sorted({ cellId: "len@ja" })).toEqual(["UI_OK", "UI_CANCEL", "UI_SAVE_CONFIRM", "UI_GOLD"]);
+      expect(await sorted({ cellId: "len@ja", dir: "desc" })).toEqual(["UI_GOLD", "UI_SAVE_CONFIRM", "UI_CANCEL", "UI_OK"]);
+      // 上限（リソースの中の列。文字列）: 4 / 6 / 12 / 空。
+      expect(await sorted({ cellId: "maxLength" })).toEqual(["UI_OK", "UI_CANCEL", "UI_SAVE_CONFIRM", "UI_GOLD"]);
+      expect(await sorted({ cellId: "maxLength", dir: "desc" })).toEqual(["UI_SAVE_CONFIRM", "UI_CANCEL", "UI_OK", "UI_GOLD"]);
+    });
+
+    it("小数と負の数も、数の大きさの順（文字として比べると 1.5 が 1.25 の前に来てしまう）", async () => {
+      const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+      await tp.patchConfig({ columns: [...config.columns, { id: "priority", kind: "meta", scope: "entry", type: "number", source: "builtin.db" }] });
+      await ws.reloadPlugins();
+      const values: Record<string, number> = { UI_OK: 1.5, UI_CANCEL: -5, UI_SAVE_CONFIRM: 1.25, UI_GOLD: 10 };
+      for (const [key, value] of Object.entries(values)) await ws.setCell({ resourceId: UI, key, cellId: "priority", value });
+      expect(await sorted({ cellId: "priority" })).toEqual(["UI_CANCEL", "UI_SAVE_CONFIRM", "UI_OK", "UI_GOLD"]);
+      expect(await sorted({ cellId: "priority", dir: "desc" })).toEqual(["UI_GOLD", "UI_OK", "UI_SAVE_CONFIRM", "UI_CANCEL"]);
+    });
+
+    it("日付の列は、日付の古い順（値のない行は最後）", async () => {
+      const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+      await tp.patchConfig({ columns: [...config.columns, { id: "due", kind: "meta", scope: "entry", type: "date", source: "builtin.db" }] });
+      await ws.reloadPlugins();
+      const values: Record<string, string> = { UI_OK: "2026-11-15", UI_CANCEL: "2026-02-01", UI_GOLD: "2025-12-31" };
+      for (const [key, value] of Object.entries(values)) await ws.setCell({ resourceId: UI, key, cellId: "due", value });
+      expect(await sorted({ cellId: "due" })).toEqual(["UI_GOLD", "UI_CANCEL", "UI_OK", "UI_SAVE_CONFIRM"]);
+      expect(await sorted({ cellId: "due", dir: "desc" })).toEqual(["UI_OK", "UI_CANCEL", "UI_GOLD", "UI_SAVE_CONFIRM"]);
+    });
+
+    it("選択式の列は、選択肢の並び順（未着手、作業中、確定）で比べる。同じ値の行は、リソースの中の順のまま", async () => {
+      await ws.setCell({ resourceId: UI, key: "UI_CANCEL", cellId: "textStatus@ko", value: "done" });
+      await ws.setCell({ resourceId: UI, key: "UI_GOLD", cellId: "textStatus@ko", value: "wip" });
+      // 値の文字の順（done < todo < wip）ではなく、選択肢の順（todo < wip < done）。
+      expect(await sorted({ cellId: "textStatus@ko" })).toEqual(["UI_OK", "UI_SAVE_CONFIRM", "UI_GOLD", "UI_CANCEL"]);
+      expect(await sorted({ cellId: "textStatus@ko", dir: "desc" })).toEqual(["UI_CANCEL", "UI_GOLD", "UI_OK", "UI_SAVE_CONFIRM"]);
+    });
+
+    it("本文の列でも並べ替えられる（未保存の編集の値で比べる）。絞り込みとページの切り出しは、並べ替えたあと", async () => {
+      await ws.setText({ resourceId: UI, key: "UI_SAVE_CONFIRM", language: "ko", value: "가" });
+      expect((await sorted({ cellId: "text@ko" }))[0]).toBe("UI_SAVE_CONFIRM");
+      expect(await sorted({ cellId: "key", dir: "desc" }, { search: "UI_" , onlyUnsaved: true })).toEqual(["UI_SAVE_CONFIRM"]);
+      const page = await ws.rows({ resourceId: UI, languages: ["ja"], offset: 1, limit: 2, sort: { cellId: "key" } });
+      expect(page.rows.map((x) => x.key)).toEqual(["UI_GOLD", "UI_OK"]);
+      expect(page.total).toBe(4);
+    });
+
+    it("ない列、アクション列、知らない向きは断る", async () => {
+      await expect(sorted({ cellId: "nope" })).rejects.toMatchObject({ code: "not-found" });
+      await expect(sorted({ cellId: "key", dir: "up" as never })).rejects.toMatchObject({ code: "invalid" });
+      const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+      await tp.patchConfig({ columns: [...config.columns, { id: "ops", kind: "actions", scope: "entry" }] });
+      await ws.reloadPlugins();
+      await expect(sorted({ cellId: "ops" })).rejects.toMatchObject({ code: "invalid" });
+    });
+  });
+
   it("ドラフトを表示する", async () => {
     await ws.setText({ resourceId: CHAPTER, key: "CH01_INTRO_002", language: "ko", value: "어디야?" });
     const r = await ws.rows({ resourceId: CHAPTER, languages: ["ko"], offset: 1, limit: 1 });
@@ -302,5 +396,153 @@ describe("info.localSettings", () => {
     expect(info.localSettings).toMatchObject({ "user.name": "tester", "ui.theme": "light", "review.forwardOnPost": "ask", "plugins.local.formats": "deny" });
     expect(info.localSettings["secrets.llm.apiKey"]).toBe((await ws.settings()).local.find((s) => s.key === "secrets.llm.apiKey")!.value);
     expect(JSON.stringify(info)).not.toContain("sk-secret");
+  });
+});
+
+describe("tokens", () => {
+  it("そのリソースの記法で、本文を途切れなくトークンに分ける（texts と同じ順・同じ数）", async () => {
+    const [a, b, c] = await ws.tokens({ resourceId: UI, texts: ["所持金：{gold} G", "<b>太字</b>", ""] });
+    expect(a).toEqual([
+      { kind: "text", value: "所持金：", range: { start: 0, end: 4 } },
+      { kind: "variable", value: "{gold}", range: { start: 4, end: 10 } },
+      { kind: "text", value: " G", range: { start: 10, end: 12 } },
+    ]);
+    expect(b!.map((t) => [t.kind, t.value])).toEqual([
+      ["tag", "<b>"],
+      ["text", "太字"],
+      ["tag", "</b>"],
+    ]);
+    expect(c).toEqual([]);
+  });
+
+  it("文字列でない本文、多すぎる本文、知らないリソースは断る", async () => {
+    await expect(ws.tokens({ resourceId: UI, texts: [1 as never] })).rejects.toMatchObject({ code: "invalid" });
+    await expect(ws.tokens({ resourceId: UI, texts: Array.from({ length: 201 }, () => "x") })).rejects.toMatchObject({ code: "invalid" });
+    await expect(ws.tokens({ resourceId: "nope.csv", texts: ["x"] })).rejects.toMatchObject({ code: "not-found" });
+  });
+});
+
+describe("info.editor", () => {
+  it("設定がなければ、参照は基になる言語だけ、長さはコードポイント", async () => {
+    expect((await ws.info()).editor).toEqual({ referenceLanguages: [], count: { unit: "codepoints", skipTokens: false } });
+  });
+
+  it("設定の値を返す。プロジェクトにない言語・列・数え方は使わず、警告にする", async () => {
+    await tp.patchConfig({
+      editor: { referenceLanguages: ["JaEnglish", "xx"], referenceColumns: ["textStatus", "nope"], count: { unit: "pixels", skipTokens: true } },
+    });
+    const info = await ws.reloadPlugins();
+    expect(info.editor).toEqual({ referenceLanguages: ["JaEnglish"], referenceColumns: ["textStatus"], count: { unit: "codepoints", skipTokens: true } });
+    expect(info.warnings.filter((w) => w.includes("editor."))).toHaveLength(3);
+    await tp.patchConfig({ editor: { count: { unit: "width" }, referenceColumns: [] } });
+    expect((await ws.reloadPlugins()).editor).toEqual({ referenceLanguages: [], referenceColumns: [], count: { unit: "width", skipTokens: false } });
+  });
+});
+
+describe("info.grid.progressColumn", () => {
+  it("設定がなければ入らない。選択式の列の ID なら入り、そうでなければ警告にして入れない", async () => {
+    expect((await ws.info()).grid).toEqual({ pinCommon: true, maxPinnedRatio: 0.6, progressUnit: "rows" });
+    await tp.patchConfig({ grid: { progressColumn: "textStatus" } });
+    expect((await ws.reloadPlugins()).grid).toEqual({ pinCommon: true, maxPinnedRatio: 0.6, progressColumn: "textStatus", progressUnit: "rows" });
+    for (const bad of ["text", "key", "nope"]) {
+      await tp.patchConfig({ grid: { progressColumn: bad } });
+      const info = await ws.reloadPlugins();
+      expect(info.grid, bad).toEqual({ pinCommon: true, maxPinnedRatio: 0.6, progressUnit: "rows" });
+      expect(info.warnings.filter((w) => w.includes("grid.progressColumn")), bad).toHaveLength(1);
+    }
+  });
+});
+
+describe("進捗の数え方（grid.progressUnit）", () => {
+  // ui.csv の原文（ja）: 決定 = 2 文字、キャンセル = 5、セーブしますか？ = 8、所持金：{gold} G = 12（空白で区切ると 2 語）。合計 27 文字、5 語。
+  const progressOf = async (column = "textStatus") => (await ws.stats({ resourceIds: [UI] }))[0]!.progress[column]!;
+
+  beforeEach(async () => {
+    await ws.setCell({ resourceId: UI, key: "UI_OK", cellId: "textStatus@ko", value: "done" });
+    await ws.setCell({ resourceId: UI, key: "UI_GOLD", cellId: "textStatus@ko", value: "done" });
+    await ws.setCell({ resourceId: UI, key: "UI_CANCEL", cellId: "textStatus@ja", value: "done" });
+  });
+
+  it("設定がなければ行数で数える", async () => {
+    expect((await ws.info()).grid.progressUnit).toBe("rows");
+    const p = await progressOf();
+    expect(p["ko"]).toEqual({ complete: 2, total: 4 });
+    expect(p["ja"]).toEqual({ complete: 1, total: 4 });
+  });
+
+  it("characters: 原文の文字数で数える（訳の言語は基になる言語の本文、原文の言語は自分の本文）", async () => {
+    await tp.patchConfig({ grid: { progressUnit: "characters" } });
+    expect((await ws.reloadPlugins()).grid.progressUnit).toBe("characters");
+    const p = await progressOf();
+    expect(p["ko"]).toEqual({ complete: 2 + 12, total: 27 });
+    expect(p["ja"]).toEqual({ complete: 5, total: 27 });
+    // 原文が変わると（未保存の編集でも）、重みも変わる。
+    await ws.setText({ resourceId: UI, key: "UI_OK", language: "ja", value: "決定する" });
+    expect((await progressOf())["ko"]).toEqual({ complete: 4 + 12, total: 29 });
+  });
+
+  it("words: 原文を空白で区切った語数で数える（空の原文は 0）", async () => {
+    await tp.patchConfig({ grid: { progressUnit: "words" } });
+    await ws.reloadPlugins();
+    expect((await progressOf())["ko"]).toEqual({ complete: 1 + 2, total: 5 });
+    await ws.setText({ resourceId: UI, key: "UI_CANCEL", language: "ja", value: "" });
+    expect((await progressOf())["ko"]).toEqual({ complete: 3, total: 4 });
+  });
+
+  it("行に 1 つの列は、最初の原文の言語の本文で量る", async () => {
+    const config = JSON.parse(await tp.read("loc-studio.project.json")) as { columns: unknown[] };
+    const flag = { id: "checked", kind: "meta", scope: "entry", source: "builtin.db", type: { default: "no", enum: [{ value: "no" }, { value: "yes", complete: true }] } };
+    await tp.patchConfig({ columns: [...config.columns, flag], grid: { progressUnit: "characters" } });
+    await ws.reloadPlugins();
+    await ws.setCell({ resourceId: UI, key: "UI_GOLD", cellId: "checked", value: "yes" });
+    expect((await progressOf("checked"))["*"]).toEqual({ complete: 12, total: 27 });
+  });
+
+  it("知らない値は行数で数え、警告にする", async () => {
+    await tp.patchConfig({ grid: { progressUnit: "pages" } });
+    const info = await ws.reloadPlugins();
+    expect(info.grid.progressUnit).toBe("rows");
+    expect(info.warnings.filter((w) => w.includes("grid.progressUnit"))).toHaveLength(1);
+    expect((await progressOf())["ko"]).toEqual({ complete: 2, total: 4 });
+  });
+});
+
+describe("要確認の印の切り替え（validation.recheck）", () => {
+  const recheckOf = async () => (await ws.rowDetail({ resourceId: UI, key: "UI_OK" })).row.cells["text@ko"]!.needsRecheck;
+  const editBoth = async () => {
+    await ws.setText({ resourceId: UI, key: "UI_OK", language: "ko", value: "좋아" });
+    await ws.save({ resourceId: UI });
+    await ws.setText({ resourceId: UI, key: "UI_OK", language: "ja", value: "けってい" });
+    await ws.save({ resourceId: UI });
+  };
+
+  it("既定では、訳文を保存したあとで基になる言語の本文が変わると、印が付く", async () => {
+    await editBoth();
+    expect(await recheckOf()).toBe(true);
+    // 要確認の絞り込みにも入る。
+    expect((await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10, onlyStale: true })).rows.map((r) => r.key)).toEqual(["UI_OK"]);
+  });
+
+  it("recheck: false にすると、印を付けず、要確認の絞り込みにも入らない", async () => {
+    await tp.patchConfig({ validation: { recheck: false } });
+    await ws.reloadPlugins();
+    await editBoth();
+    expect(await recheckOf()).toBeUndefined();
+    expect((await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10, onlyStale: true })).rows).toEqual([]);
+  });
+
+  it("recheck: false のあいだも保存時の原文は記録し、設定を戻すと、そのあいだの変更にも正しく印が付く", async () => {
+    await tp.patchConfig({ validation: { recheck: false } });
+    await ws.reloadPlugins();
+    await editBoth(); // 訳文を保存したあとで、原文が変わった
+    // 原文を変えたあとで保存し直した訳文（UI_CANCEL）には、印が付かない。
+    await ws.setText({ resourceId: UI, key: "UI_CANCEL", language: "ja", value: "やめる" });
+    await ws.save({ resourceId: UI });
+    await ws.setText({ resourceId: UI, key: "UI_CANCEL", language: "ko", value: "그만" });
+    await ws.save({ resourceId: UI });
+    await tp.patchConfig({ validation: { recheck: true } });
+    await ws.reloadPlugins();
+    expect(await recheckOf()).toBe(true);
+    expect((await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10, onlyStale: true })).rows.map((r) => r.key)).toEqual(["UI_OK"]);
   });
 });

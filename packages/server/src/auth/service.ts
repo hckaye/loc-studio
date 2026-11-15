@@ -16,7 +16,7 @@ import type { CellRef, CellStore, HostDb } from "@loc-studio/sdk";
 import { ApiError } from "../api-types.js";
 import type { CallContext, Role, UserSettingsStore } from "../api-types.js";
 import { KeyedMutex } from "../mutex.js";
-import { ROLES } from "../permissions.js";
+import { ROLE_ID_RE } from "@loc-studio/core";
 import { DEFAULT_SCRYPT, hashPassword, MAX_PASSWORD_LENGTH, needsRehash, verifyPassword } from "./password.js";
 import type { ScryptParams } from "./password.js";
 
@@ -184,9 +184,13 @@ function checkPassword(password: unknown): string {
   return password;
 }
 
+/**
+ * 役割の ID の形だけを確かめる。そのプロジェクトで定義された役割かどうかは、プロジェクトの設定を読める
+ * 呼び出し側（ServerRuntime の admin.setMembership）が確かめる。定義にない役割は、権限の確認で何もできない役割になる。
+ */
 function checkRole(role: unknown): Role {
-  if (!ROLES.includes(role as Role)) throw new ApiError("invalid", `役割は ${ROLES.join(" / ")} のどれかにしてください。`);
-  return role as Role;
+  if (typeof role !== "string" || !ROLE_ID_RE.test(role)) throw new ApiError("invalid", "役割は、英数字と . _ - の 1〜64 文字の ID で指定してください。");
+  return role;
 }
 
 function publicUser(u: StoredUser): AuthUser {

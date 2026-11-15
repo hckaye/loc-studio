@@ -13,6 +13,7 @@ import { errorText, GENERATED_CELLS_NS, GENERATED_NS } from "./context.js";
 import type { DocState } from "./documents.js";
 import { generatorCacheKey, textHash } from "./hash.js";
 import type { JobHandle } from "./jobs.js";
+import { assertCanRun } from "./permissions.js";
 
 const DEFAULT_BATCH_SIZE = 10;
 
@@ -64,6 +65,7 @@ export async function generate(
   const column = ctx.column(params?.columnId);
   if (!column) throw new ApiError("not-found", `列 "${String(params?.columnId)}" はありません。`);
   if (column.kind !== "generated") throw new ApiError("invalid", `列 "${column.id}" は生成列ではありません。`);
+  assertCanRun("generator", column.id);
   const spec = ctx.generatorFor(column);
   if (!spec) {
     throw new ApiError("invalid", `生成列 "${column.id}" の生成器 "${column.generator ?? ""}" が見つかりません（設定の generators と登録された生成器を確かめてください）。`);

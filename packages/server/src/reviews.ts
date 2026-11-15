@@ -2,7 +2,7 @@
  * レビュー: 投稿（postReview）、一覧（reviews）、レビュー先への転載（forwardReview）。
  */
 import { resolveSetting } from "@loc-studio/core";
-import type { Action, ActionContext, ColumnDef, ColumnSource, EntryData, LanguageDef, Options, ReviewPost } from "@loc-studio/sdk";
+import type { Action, ActionContext, ColumnDef, ColumnSource, EntryData, LanguageDef, Options, ReviewPost, WorkflowEvent } from "@loc-studio/sdk";
 import { ApiError } from "./api-types.js";
 import type { ReviewInfo } from "./api-types.js";
 import { loadSourceValues, pageRowReader, targetHash } from "./cells.js";
@@ -10,6 +10,8 @@ import type { ColumnValues } from "./cells.js";
 import type { WsContext } from "./context.js";
 import { defaultValue, enumOf, errorText, REVIEW_FORWARDS_NS } from "./context.js";
 import { assertCan } from "./permissions.js";
+import { applyPatches, transitionProblem } from "./editing.js";
+import { runAfter, runBefore } from "./hooks.js";
 import type { DocState } from "./documents.js";
 
 interface ReviewCell {
@@ -60,7 +62,7 @@ export async function postReview(
 ): Promise<ReviewInfo> {
   const rc = await reviewCell(ctx, params);
   const { column, language, doc, data } = rc;
-  assertCan("review", column.scope === "language" ? language?.id : undefined);
+  assertCan("review", column.scope === "language" ? language?.id : undefined, column.id);
   const verdict = params.verdict;
   const comment = typeof params.comment === "string" ? params.comment : "";
   if (typeof verdict !== "string" || verdict === "") throw new ApiError("invalid", "レビューの判定（verdict）を指定してください。");
@@ -84,6 +86,13 @@ export async function postReview(
     if (tlang !== undefined) await ctx.rememberTexts([ctx.effectiveText(rid, data, tlang) ?? ""]);
   }
   const [previous] = await rc.source.load([ref], rc.sourceCtx);
+  const previousVerdict = previous ? previous.value : defaultValue(column);
+  // 判定の選択肢の from / roles（遷移と役割の制限）。直前の判定がいまの値。
+  const problem = transitionProblem(column, previousVerdict, verdict);
+  if (problem !== undefined) throw new ApiError("blocked", problem, { transition: { from: previousVerdict ?? null, to: verdict } });
+  const event: WorkflowEvent = { type: "review.post", resource: doc.resource, column, cell: ref, verdict, comment, previous: previousVerdict };
+  if (language && column.scope === "language") event.language = language;
+  await runBefore(ctx, event);
 
   let post: ReviewPost;
   try {
@@ -93,10 +102,11 @@ export async function postReview(
   }
   if (ctx.recordsHistory(column)) {
     await ctx.appendHistory([
-      { cell: ref, data: { oldValue: previous ? previous.value : defaultValue(column), newValue: verdict, cause: "review", causeRef: post.id } },
+      { cell: ref, data: { oldValue: previousVerdict, newValue: verdict, cause: "review", causeRef: post.id } },
     ]);
   }
   ctx.bump();
+  await runAfter(ctx, { ...event, review: post }, applyPatches);
 
   const mode = resolveSetting("review.forwardOnPost", ctx.currentLayers())?.value ?? "ask";
   const doForward = mode === "always" || (mode === "ask" && params.forward === true);
@@ -163,7 +173,7 @@ export async function forwardReview(
   params: { resourceId: string; key: string; cellId: string; reviewId: string; actionId: string },
 ): Promise<ReviewInfo> {
   const rc = await reviewCell(ctx, params);
-  assertCan("review", rc.column.scope === "language" ? rc.language?.id : undefined);
+  assertCan("review", rc.column.scope === "language" ? rc.language?.id : undefined, rc.column.id);
   const ref = ctx.cellRef(rc.doc.resource.id, rc.data.key, rc.column, rc.language?.id);
   const posts = await rc.source.listReviews!(ref, rc.sourceCtx);
   const post = posts.find((p) => p.id === params.reviewId);

@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { ColumnDef, LanguageDef, TextToken, ValidateContext, Validator } from "@loc-studio/sdk";
 import type { ResolvedValidator, ValidationTarget } from "./types.js";
 import {
+  cellValueText,
+  runResourceValidators,
   runValidators,
   severityAtLeast,
   stableStringify,
   summarizeValidation,
+  validatedMetaColumns,
   validationCacheKey,
   validatorApplies,
 } from "./validation.js";
@@ -375,5 +378,111 @@ describe("stableStringify", () => {
     const o: Record<string, unknown> = {};
     o.self = o;
     expect(() => stableStringify(o)).toThrow(/循環参照/);
+  });
+});
+
+describe("validatedMetaColumns", () => {
+  const statusCol: ColumnDef = { id: "status", kind: "meta", scope: "language", source: "db" };
+  const computedCol: ColumnDef = { id: "len", kind: "computed", scope: "language" };
+  const all = [textCol, noteCol, commentCol, statusCol, computedCol];
+
+  it("バリデータ（か設定）が名指しした、値を持つ列だけ。名指しのない列は対象にしない", () => {
+    expect(validatedMetaColumns(all, [rv()])).toEqual([]);
+    expect(validatedMetaColumns(all, [rv({ columns: ["note"] })]).map((c) => c.id)).toEqual(["note"]);
+    // 設定の columns がバリデータ自身の指定を置き換える。複数のバリデータの指定は合わせる。列の並びは設定の順。
+    expect(validatedMetaColumns(all, [rv({ columns: ["note"] }, { columns: ["status"] }), rv({ columns: ["comment"] })]).map((c) => c.id)).toEqual(["comment", "status"]);
+  });
+
+  it("本文・計算列・存在しない列は、名指しされても対象にしない。validateResource だけのバリデータの columns は数えない", () => {
+    expect(validatedMetaColumns(all, [rv({ columns: ["text", "len", "nope"] })])).toEqual([]);
+    const resourceOnly: Validator = { id: "r", label: "R", version: "1", columns: ["note"], validateResource: () => [] };
+    expect(validatedMetaColumns(all, [{ validator: resourceOnly, options: {} }])).toEqual([]);
+  });
+});
+
+describe("cellValueText", () => {
+  it("値のないセルは空文字。文字列はそのまま、数値と真偽値は文字にし、オブジェクトはキー順をそろえた JSON", () => {
+    expect([undefined, null, "", "a b", 0, 12.5, false, true].map(cellValueText)).toEqual(["", "", "", "a b", "0", "12.5", "false", "true"]);
+    expect(cellValueText({ b: 1, a: [2] })).toBe('{"a":[2],"b":1}');
+  });
+});
+
+describe("runResourceValidators", () => {
+  const resource = { id: "a.csv", path: "dir/a.csv", name: "a.csv" };
+  const rows = ["k1", "k2"].map((key) => ({ entry: { key, resource }, row }));
+  const input = { resource, rows, languages: [ja, en], columns: [textCol, noteCol, commentCol] };
+  const resourceValidator = (id: string, validateResource: Validator["validateResource"], over: Partial<Validator> = {}): Validator => ({ id, label: id, version: "1", validateResource, ...over });
+  const resolved = (v: Validator, over: Partial<ResolvedValidator> = {}): ResolvedValidator => ({ validator: v, options: { dict: "x" }, ...over });
+
+  it("問題のセルを決める: columnId を省くと本文の列。言語ごとの列は language を残し、行に 1 つの列は language を捨てる", async () => {
+    let received: unknown;
+    const v = resourceValidator("r", (ctx) => {
+      received = ctx;
+      return [
+        { key: "k1", language: "en", code: "a", message: "A" },
+        { key: "k2", columnId: "comment", language: "ja", code: "b", message: "B", range: { start: 0, end: 1 } },
+        { key: "k2", columnId: "note", language: "en", code: "c", message: "C" },
+      ];
+    });
+    const { issues, problems } = await runResourceValidators(input, [resolved(v)]);
+    expect(problems).toEqual([]);
+    expect(issues).toEqual([
+      { key: "k1", columnId: "text", language: "en", code: "a", message: "A", severity: "error", validatorId: "r" },
+      { key: "k2", columnId: "comment", language: "ja", code: "b", message: "B", range: { start: 0, end: 1 }, severity: "error", validatorId: "r" },
+      { key: "k2", columnId: "note", code: "c", message: "C", severity: "error", validatorId: "r" },
+    ]);
+    expect(received).toEqual({ ...input, options: { dict: "x" } });
+  });
+
+  it("セルを特定できない問題（行・列・言語がない）は捨てて、件数を problems に 1 行で出す", async () => {
+    const v = resourceValidator("r", () => [
+      { key: "nope", language: "en", code: "x", message: "行がない" },
+      { key: "k1", columnId: "nope", code: "x", message: "列がない" },
+      { key: "k1", code: "x", message: "言語ごとの列なのに言語がない" },
+      { key: "k1", language: "zz", code: "x", message: "プロジェクトにない言語" },
+      { key: "k1", language: "en", code: "ok", message: "残る" },
+    ]);
+    const { issues, problems } = await runResourceValidators(input, [resolved(v)]);
+    expect(issues.map((i) => i.code)).toEqual(["ok"]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("4 件");
+    expect(problems[0]).toContain("dir/a.csv");
+  });
+
+  it("失敗したバリデータ（例外、配列でない結果）は problems に出し、ほかのバリデータの結果は残す", async () => {
+    const boom = resourceValidator("boom", () => {
+      throw new Error("辞書がない");
+    });
+    const notArray = resourceValidator("notArray", () => "x" as never);
+    const fine = resourceValidator("fine", async () => [{ key: "k1", language: "ja", code: "ok", message: "ok" }]);
+    const { issues, problems } = await runResourceValidators(input, [resolved(boom), resolved(notArray), resolved(fine)]);
+    expect(issues.map((i) => `${i.validatorId}:${i.code}`)).toEqual(["fine:ok"]);
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toMatch(/boom.*辞書がない/);
+    expect(problems[1]).toMatch(/notArray.*配列ではありません/);
+  });
+
+  it("重さは 設定 > 問題 > バリデータの既定 > error。設定の columns / languages は、見つけた問題のセルに当てる", async () => {
+    const found = [
+      { key: "k1", language: "en", code: "text-en", message: "" },
+      { key: "k1", language: "ja", code: "text-ja", message: "", severity: "info" as const },
+      { key: "k1", columnId: "note", code: "note", message: "" },
+    ];
+    const v = resourceValidator("r", () => found, { severity: "warning" });
+    const codes = async (over: Partial<ResolvedValidator>) => (await runResourceValidators(input, [resolved(v, over)])).issues.map((i) => `${i.code}:${i.severity}`);
+    expect(await codes({})).toEqual(["text-en:warning", "text-ja:info", "note:warning"]);
+    expect(await codes({ severity: "error" })).toEqual(["text-en:error", "text-ja:error", "note:error"]);
+    expect(await codes({ columns: ["note"] })).toEqual(["note:warning"]);
+    // 言語で絞ると、言語のないセル（行に 1 つの列）の問題は対象外。
+    expect(await codes({ languages: ["en"] })).toEqual(["text-en:warning"]);
+    // バリデータ自身の languages も同じに効く。
+    const own = resourceValidator("r", () => found, { languages: ["ja"] });
+    expect((await runResourceValidators(input, [resolved(own)])).issues.map((i) => i.code)).toEqual(["text-ja"]);
+  });
+
+  it("validateResource のないバリデータは呼ばない（セルごとのバリデータと混ぜて渡してよい）", async () => {
+    let called = 0;
+    const { issues, problems } = await runResourceValidators(input, [rv({ validate: () => (called++, []) })]);
+    expect({ issues, problems, called }).toEqual({ issues: [], problems: [], called: 0 });
   });
 });

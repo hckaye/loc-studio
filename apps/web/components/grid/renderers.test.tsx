@@ -119,7 +119,7 @@ describe("独自描画", () => {
     const info = makeInfo({
       columns: base.columns.map((c) => (c.id === "note" ? { ...c, renderer: "demo.star" } : c)),
       renderers: [{ id: "demo.star", pluginName: "p", hash: "h" }],
-      permissions: { role: "viewer", can: { edit: false, review: false, run: false, manage: false } },
+      permissions: { role: "viewer", can: { edit: false, review: false, run: false, structure: false, manage: false } },
     });
     const { api } = mockApi(info);
     render(

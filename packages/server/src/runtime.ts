@@ -6,6 +6,8 @@ import path from "node:path";
 import { openStore } from "@loc-studio/store";
 import type { Store } from "@loc-studio/store";
 import type { Plugin } from "@loc-studio/sdk";
+import { DEFAULT_ROLES } from "@loc-studio/core";
+import type { RoleDef } from "@loc-studio/sdk";
 import { ApiError } from "./api-types.js";
 import type { Role, Workspace, WorkspaceOptions } from "./api-types.js";
 import { openAuthService } from "./auth/service.js";
@@ -38,6 +40,8 @@ export interface ProjectSummary {
   name: string;
   /** Web モード: この利用者の役割（管理者は manager）。 */
   role?: Role;
+  /** 役割の表示名（同梱の役割の名前。プロジェクトをすでに開いていれば、その設定の名前）。 */
+  roleLabel?: string;
   languages?: string[];
 }
 
@@ -87,6 +91,14 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
   let serverDb: Store | undefined;
   let auth: AuthService | undefined;
   if (mode === "web") {
+    const a = config!.auth;
+    // 設定の確認は、サーバーの DB を開く前に済ませる（開いたあとで失敗すると、DB を開いたままにしてしまう）。
+    let proxySecret: string | undefined;
+    if (a.proxySecretEnv !== undefined) {
+      proxySecret = env[a.proxySecretEnv];
+      // 合言葉を設定したのに値がないときは、名前のヘッダーだけを信じることになるので開かない。
+      if (!proxySecret) throw new Error(`auth.proxySecretEnv の環境変数 ${a.proxySecretEnv} が設定されていません。`);
+    }
     const dbUserName = (): string => "server";
     serverDb =
       config!.serverDb.driver === "postgres"
@@ -97,13 +109,7 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
             ...(opts.now ? { now: opts.now } : {}),
           })
         : await openStore({ path: config!.serverDb.path, userName: dbUserName, ...(opts.now ? { now: opts.now } : {}) });
-    const a = config!.auth;
-    let proxySecret: string | undefined;
-    if (a.proxySecretEnv !== undefined) {
-      proxySecret = env[a.proxySecretEnv];
-      // 合言葉を設定したのに値がないときは、名前のヘッダーだけを信じることになるので開かない。
-      if (!proxySecret) throw new Error(`auth.proxySecretEnv の環境変数 ${a.proxySecretEnv} が設定されていません。`);
-    }
+    try {
     auth = openAuthService({
       db: serverDb,
       config: {
@@ -122,9 +128,15 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
     if (a.mode === "password" && adminUser && adminPassword) {
       await auth.bootstrapAdmin({ name: adminUser, password: adminPassword });
     }
-    // 最初の管理者のパスワードを、プラグインなどから読めるところに残さない。
-    delete env["LOC_STUDIO_ADMIN_PASSWORD"];
-    delete env["LOC_STUDIO_ADMIN_USER"];
+    } catch (err) {
+      // 認証の用意に失敗したら、開いた DB を閉じてから伝える（ファイルを掴んだままにしない）。
+      serverDb.close();
+      throw err;
+    } finally {
+      // 最初の管理者のパスワードを、プラグインなどから読めるところに残さない。
+      delete env["LOC_STUDIO_ADMIN_PASSWORD"];
+      delete env["LOC_STUDIO_ADMIN_USER"];
+    }
   }
 
   const workspaces = new Map<string, Promise<Workspace>>();
@@ -175,6 +187,16 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
     return ws;
   }
 
+  /**
+   * プロジェクトの役割の定義。プロジェクトを開けないときは同梱の役割
+   * （壊れたプロジェクトでも、管理者が割り当てを直せるようにする）。
+   */
+  async function rolesOf(projectId: string, opts: { open: boolean }): Promise<Readonly<Record<string, RoleDef>>> {
+    const pending = opts.open ? workspace(projectId) : workspaces.get(projectOf(projectId).id);
+    const ws = pending ? await pending.catch(() => undefined) : undefined;
+    return ws?.roles() ?? DEFAULT_ROLES;
+  }
+
   async function callFor(projectId: string, user: AuthUser | undefined) {
     if (mode === "local") return undefined;
     if (!user) throw new ApiError("unauthorized", "ログインしてください。");
@@ -214,6 +236,11 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
     async setMembership(actor, projectId, user, m) {
       const a = await requireAdmin(actor);
       projectOf(projectId);
+      // そのプロジェクトで定義された役割だけを割り当てる（同梱の役割と、設定の roles）。
+      const roles = await rolesOf(projectId, { open: true });
+      if (typeof m?.role !== "string" || !Object.prototype.hasOwnProperty.call(roles, m.role)) {
+        throw new ApiError("invalid", `役割 "${String(m?.role)}" は、プロジェクト "${projectId}" にありません（使える役割: ${Object.keys(roles).join(" / ")}）。`);
+      }
       return a.setMembership(projectId, user, m);
     },
     removeMembership: async (actor, projectId, user) => (await requireAdmin(actor)).removeMembership(projectId, user),
@@ -232,6 +259,10 @@ export async function openServerRuntime(opts: ServerRuntimeOptions): Promise<Ser
         const call = await auth!.callContextFor(user, p.id);
         if (!call) continue;
         const s: ProjectSummary = { id: p.id, name: p.name, role: call.role };
+        // 一覧のためにプロジェクトを開くことはしない（開いていれば、その設定の名前を使う）。
+        const roles = await rolesOf(p.id, { open: false });
+        const label = Object.prototype.hasOwnProperty.call(roles, call.role) ? roles[call.role]!.label : undefined;
+        if (label !== undefined) s.roleLabel = label;
         if (call.languages) s.languages = call.languages;
         out.push(s);
       }

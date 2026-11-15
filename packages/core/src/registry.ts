@@ -9,6 +9,7 @@ import type {
   TextSyntax,
   TreeProvider,
   Validator,
+  WorkflowHook,
 } from "@loc-studio/sdk";
 import type { ExtensionKind, LoadedPlugin, PluginOrigin } from "./types.js";
 
@@ -22,6 +23,7 @@ export interface ExtensionTypeMap {
   generator: Generator;
   action: Action;
   validator: Validator;
+  hook: WorkflowHook;
   renderer: CellRenderer;
 }
 
@@ -35,6 +37,7 @@ export const EXTENSION_FIELDS = {
   generator: "generators",
   action: "actions",
   validator: "validators",
+  hook: "hooks",
   renderer: "renderers",
 } as const satisfies Record<ExtensionKind, keyof Plugin>;
 

@@ -2,20 +2,33 @@
 import { useEffect, useRef, useState } from "react";
 import type { ActionInfo } from "@loc-studio/server";
 import { Chip } from "@/components/EnumSelect";
-import { cellIdOf, columnAppliesTo, columnLabel, enumOptions, type ColumnDef, type LanguageDef } from "@/lib/client/model";
+import { cellIdOf, columnAppliesTo, columnLabel, enumOptions, gridKind, SEVERITY_LABEL, type ColumnDef, type LanguageDef, type Severity } from "@/lib/client/model";
 
 /* ツールバー: 検索、列の値での絞り込み、切り替え、言語の選択、表示密度、保存。 */
 
 export interface ToolbarFilters {
   search: string;
   values: Record<string, string[]>;
+  /** 文字・数値の列の「含む」絞り込み（セルの ID → 探す文字列）。 */
+  contains: Record<string, string>;
   onlyUntranslated: boolean;
   onlyIssues: boolean;
+  /** 「問題あり」で数える重さ（これ以上の問題がある行）。 */
+  issueLevel: Severity;
   onlyStale: boolean;
   onlyUnsaved: boolean;
 }
 
-export const EMPTY_FILTERS: ToolbarFilters = { search: "", values: {}, onlyUntranslated: false, onlyIssues: false, onlyStale: false, onlyUnsaved: false };
+export const EMPTY_FILTERS: ToolbarFilters = {
+  search: "",
+  values: {},
+  contains: {},
+  onlyUntranslated: false,
+  onlyIssues: false,
+  issueLevel: "warning",
+  onlyStale: false,
+  onlyUnsaved: false,
+};
 
 export interface ToolbarProps {
   columns: ColumnDef[];
@@ -36,6 +49,10 @@ export interface ToolbarProps {
   onFileAction(a: ActionInfo): void;
   onReload(): void;
   onDiscardAll(): void;
+  /** 行の追加・キーの変更・削除を始める（対象の行は呼び出し側が選択から決める）。 */
+  onStructure?(kind: "add" | "rename" | "remove"): void;
+  /** 行の構成を変えられないときの理由。 */
+  structureDisabledReason?: string | undefined;
   /** 編集できないときの理由（読み取り専用など）。 */
   editDisabledReason?: string | undefined;
   runDisabledReason?: string | undefined;
@@ -73,6 +90,49 @@ function ActionsMenu({ actions, onRun, disabledReason }: { actions: ActionInfo[]
             >
               {a.icon && [...a.icon].length <= 2 ? `${a.icon} ` : ""}
               {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ROW_ITEMS = [
+  { kind: "add", label: "行を追加…" },
+  { kind: "rename", label: "キーを変更…" },
+  { kind: "remove", label: "選択した行を削除…" },
+] as const;
+
+function RowsMenu({ onChoose, disabledReason }: { onChoose(kind: "add" | "rename" | "remove"): void; disabledReason?: string | undefined }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    ref.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  return (
+    <div className="popover-anchor" ref={ref} onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setOpen(false))}>
+      <button type="button" className="btn small" aria-haspopup="menu" aria-expanded={open} disabled={disabledReason !== undefined} title={disabledReason} onClick={() => setOpen((o) => !o)}>
+        行 ▾
+      </button>
+      {open && (
+        <div className="popover right menu-pop" role="menu" aria-label="行の操作">
+          {ROW_ITEMS.map((item) => (
+            <button
+              key={item.kind}
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                setOpen(false);
+                onChoose(item.kind);
+              }}
+            >
+              {item.label}
             </button>
           ))}
         </div>
@@ -135,6 +195,59 @@ function FilterPopover({ col, languages, values, onChange }: { col: ColumnDef; l
   );
 }
 
+/** 文字・数値の列の「含む」絞り込み。入力が止まってから反映する。 */
+function ContainsPopover({ col, languages, contains, onChange }: { col: ColumnDef; languages: LanguageDef[]; contains: Record<string, string>; onChange(cellId: string, text: string): void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const cells = col.scope === "entry" ? [{ cellId: col.id, label: "" }] : languages.filter((l) => columnAppliesTo(col, l.id)).map((l) => ({ cellId: cellIdOf(col, l.id), label: l.label }));
+  const active = cells.filter((c) => (contains[c.cellId] ?? "") !== "").length;
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  useEffect(() => {
+    const pending = Object.entries(drafts);
+    if (pending.length === 0) return;
+    const t = setTimeout(() => {
+      for (const [cellId, text] of pending) onChangeRef.current(cellId, text);
+      setDrafts({});
+    }, 300);
+    return () => clearTimeout(t);
+  }, [drafts]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  return (
+    <div className="popover-anchor" ref={ref} onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setOpen(false))}>
+      <button type="button" className={`btn small${active ? " on" : ""}`} aria-haspopup="true" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {columnLabel(col)}
+        {active > 0 && <span className="count-badge">{active}</span>} ▾
+      </button>
+      {open && (
+        <div className="popover" role="group" aria-label={`${columnLabel(col)} で絞り込む`}>
+          {cells.length === 0 && <p className="muted small">表示中の言語にこの列はありません。</p>}
+          {cells.map((c) => (
+            <label key={c.cellId} className="field">
+              <span>{c.label ? `${c.label}: ` : ""}この文字を含む</span>
+              <input
+                type="search"
+                className="input small"
+                aria-label={`${columnLabel(col)}${c.label ? `（${c.label}）` : ""} に含む文字`}
+                value={drafts[c.cellId] ?? contains[c.cellId] ?? ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [c.cellId]: e.target.value }))}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ISSUE_LEVELS: Severity[] = ["error", "warning", "info"];
+
 export function Toolbar(props: ToolbarProps) {
   const { filters, onFilters } = props;
   const [search, setSearch] = useState(filters.search);
@@ -151,6 +264,8 @@ export function Toolbar(props: ToolbarProps) {
 
   const visibleLangs = props.languages.filter((l) => props.visibleLanguages.includes(l.id));
   const enumCols = props.columns.filter((c) => enumOptions(c) !== undefined);
+  // 文字・数値の値を持つ列（ファイルの中の列、列ソースの列、計算列）は「含む」で絞り込む。
+  const textCols = props.columns.filter((c) => (c.kind === "meta" || c.kind === "computed") && ["string", "number", "computed"].includes(gridKind(c)));
   const toggle = (k: "onlyUntranslated" | "onlyIssues" | "onlyStale" | "onlyUnsaved", label: string, title: string) => (
     <button type="button" className={`btn small toggle${filters[k] ? " on" : ""}`} aria-pressed={filters[k]} title={title} onClick={() => onFilters({ ...filters, [k]: !filters[k] })}>
       {label}
@@ -186,11 +301,35 @@ export function Toolbar(props: ToolbarProps) {
           }}
         />
       ))}
+      {textCols.map((c) => (
+        <ContainsPopover
+          key={c.id}
+          col={c}
+          languages={visibleLangs}
+          contains={filters.contains}
+          onChange={(cellId, text) => {
+            const contains = { ...filtersRef.current.contains };
+            if (text.trim() !== "") contains[cellId] = text.trim();
+            else delete contains[cellId];
+            onFilters({ ...filtersRef.current, contains });
+          }}
+        />
+      ))}
       {toggle("onlyUntranslated", "未翻訳のみ", "表示中の言語のどれかの本文が空の行")}
-      {toggle("onlyIssues", "問題あり", "警告以上の検証結果がある行")}
+      {toggle("onlyIssues", "問題あり", `${SEVERITY_LABEL[filters.issueLevel]}以上の検証結果がある行`)}
+      {filters.onlyIssues && (
+        <select className="input small" aria-label="問題の重さ" value={filters.issueLevel} onChange={(e) => onFilters({ ...filters, issueLevel: e.target.value as Severity })}>
+          {ISSUE_LEVELS.map((s) => (
+            <option key={s} value={s}>
+              {SEVERITY_LABEL[s]}以上
+            </option>
+          ))}
+        </select>
+      )}
       {toggle("onlyStale", "要確認", "変更ありのレビューや、基の本文が変わった本文がある行")}
       {toggle("onlyUnsaved", "未保存", "未保存の本文がある行")}
       <span className="tb-grow" />
+      {props.onStructure && <RowsMenu onChoose={props.onStructure} disabledReason={props.structureDisabledReason} />}
       {props.fileActions.length > 0 && <ActionsMenu actions={props.fileActions} onRun={props.onFileAction} disabledReason={props.runDisabledReason} />}
       <button type="button" className="btn small" onClick={props.onReload} title="リソースを読み直す（外部で書き換えたとき）">
         再読み込み

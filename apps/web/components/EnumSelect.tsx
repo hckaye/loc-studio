@@ -32,10 +32,12 @@ export interface EnumSelectProps {
   inCell?: boolean;
   /** ツールチップ（無効のときの理由など）。 */
   title?: string | undefined;
+  /** その選択肢を選べないときの理由（遷移や役割の制限）。理由のある選択肢は、理由つきで選べなくする。 */
+  optionProblem?(option: EnumOption): string | undefined;
 }
 
 /** ドロップダウン。リストは body に出すので、表のセルで切れない。 */
-export function EnumSelect({ options, value, onChoose, label, disabled, stale, inCell, title }: EnumSelectProps) {
+export function EnumSelect({ options, value, onChoose, label, disabled, stale, inCell, title, optionProblem }: EnumSelectProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [pos, setPos] = useState<{ left: number; top: number; minWidth: number } | null>(null);
@@ -72,6 +74,7 @@ export function EnumSelect({ options, value, onChoose, label, disabled, stale, i
   }, [open]);
 
   const choose = (o: EnumOption) => {
+    if (optionProblem?.(o) !== undefined) return;
     setOpen(false);
     btnRef.current?.focus();
     if (o.value !== value) onChoose(o.value);
@@ -133,24 +136,29 @@ export function EnumSelect({ options, value, onChoose, label, disabled, stale, i
             onKeyDown={onListKey}
             aria-activedescendant={`enum-opt-${active}`}
           >
-            {options.map((o, i) => (
-              <li
-                key={o.value}
-                id={`enum-opt-${i}`}
-                role="option"
-                aria-selected={o.value === value}
-                className={`enum-option${i === active ? " active" : ""}${o.value === value ? " selected" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onClick={() => choose(o)}
-              >
-                <Chip option={o} />
-                {o.requireComment && <span className="muted small">コメント必須</span>}
-              </li>
-            ))}
+            {options.map((o, i) => {
+              const problem = optionProblem?.(o);
+              return (
+                <li
+                  key={o.value}
+                  id={`enum-opt-${i}`}
+                  role="option"
+                  aria-selected={o.value === value}
+                  aria-disabled={problem !== undefined}
+                  title={problem}
+                  className={`enum-option${i === active ? " active" : ""}${o.value === value ? " selected" : ""}${problem !== undefined ? " disabled" : ""}`}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onClick={() => choose(o)}
+                >
+                  <Chip option={o} />
+                  {o.requireComment && <span className="muted small">コメント必須</span>}
+                </li>
+              );
+            })}
           </ul>,
           document.body,
         )}

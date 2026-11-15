@@ -30,6 +30,7 @@ const CAUSE_LABEL: Record<HistoryInfo["cause"], string> = {
   manual: "手動",
   action: "アクション",
   bulk: "一括",
+  hook: "フック",
   external: "外部",
   review: "レビュー",
   generate: "生成",
@@ -118,6 +119,12 @@ export function DetailPanel({
         <p className="muted small pad">読み込み中…</p>
       ) : (
         <div className="detail-body">
+          {(row.line !== undefined || row.stableId !== undefined) && (
+            <p className="muted small detail-origin">
+              {row.line !== undefined && <span>リソースの {row.line} 行目</span>}
+              {row.stableId !== undefined && <span> ID: <span className="mono">{row.stableId}</span></span>}
+            </p>
+          )}
           {onDiscardRow && canEdit(info).ok && Object.values(row.cells).some((c) => c.draft) && (
             <div className="detail-drafts">
               <span className="mark-unsaved-text">● この行に未保存の変更があります</span>

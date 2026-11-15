@@ -6,6 +6,7 @@ import { ApiError } from "./api-types.js";
 import type { HistoryInfo } from "./api-types.js";
 import type { HistoryData, WsContext } from "./context.js";
 import { HISTORY_NS, TEXT_VERSIONS_NS } from "./context.js";
+import { hasResourceScope } from "./permissions.js";
 
 const DEFAULT_LIMIT = 100;
 /** 1 回に返す履歴の上限（多すぎる要求でサーバーを止めないため）。 */
@@ -22,6 +23,8 @@ export async function history(
   const log = ctx.shared.log<HistoryData>(HISTORY_NS);
 
   // 行が消えていても履歴は見られるよう、リソースの中身は確かめない。
+  // ただし、見えるリソースを絞られた利用者には、見えるリソースの履歴だけを返す。
+  if (hasResourceScope()) await ctx.docs.resource(resourceId);
   let refs: CellRef[];
   if (params.cellId !== undefined) {
     const { column, language } = ctx.parseCellId(params.cellId);

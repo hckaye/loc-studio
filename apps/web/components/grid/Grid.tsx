@@ -52,6 +52,10 @@ export interface GridProps extends Omit<CellHandlers, "onCancelEdit"> {
   columnActions?(gc: GridColumn): ActionInfo[];
   onColumnAction?(gc: GridColumn, action: ActionInfo): void;
   onHideLanguage(language: string): void;
+  /** いまの並べ替え（なければ、リソースの中の順）。 */
+  sort?: { cellId: string; dir: "asc" | "desc" } | undefined;
+  /** 列見出しを押した（昇順、降順、解除の順に切り替える）。渡さなければ、見出しは押せない。 */
+  onSort?(gc: GridColumn): void;
   onResize(cellId: string, width: number): void;
   onViewportWidth(width: number): void;
   emptyMessage?: string;
@@ -361,6 +365,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
 
   const renderHeaderCell = (gc: GridColumn, colIndex: number, frozenLeft?: number) => {
     const label = gc.col.label ?? (gc.kind === "text" ? "本文" : gc.kind === "key" ? "キー" : columnLabel(gc.col));
+    const sorted = props.sort?.cellId === gc.cellId ? props.sort.dir : undefined;
     return (
       <div
         key={gc.cellId}
@@ -368,8 +373,24 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         className={`g-hcell${frozenLeft !== undefined ? " frozen" : ""}${colIndex === frozenCount - 1 ? " frozen-last" : ""}${selection.col === colIndex ? " col-active" : ""}`}
         style={{ width: gc.width, ...(frozenLeft !== undefined ? { left: frozenLeft } : {}) }}
         title={`${label}（${gc.cellId}）`}
+        aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"}
       >
-        <span className="g-hlabel">{label}</span>
+        {props.onSort && gc.kind !== "actions" ? (
+          <button
+            type="button"
+            className="g-hlabel g-hsort"
+            aria-label={`${label} で並べ替え（いまは${sorted === "asc" ? "昇順" : sorted === "desc" ? "降順" : "リソースの中の順"}）`}
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onSort!(gc);
+            }}
+          >
+            {label}
+            {sorted && <span aria-hidden="true">{sorted === "asc" ? " ▲" : " ▼"}</span>}
+          </button>
+        ) : (
+          <span className="g-hlabel">{label}</span>
+        )}
         {props.columnActions && props.onColumnAction && (
           <ColumnMenu gc={gc} label={label} actions={props.columnActions(gc)} onRun={props.onColumnAction} disabledReason={canRun(info).reason} />
         )}

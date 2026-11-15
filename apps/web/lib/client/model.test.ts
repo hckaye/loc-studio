@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLayout, initialPartialPins, initialPins } from "./model";
+import { buildLayout, initialPartialPins, initialPins, progressColumn } from "./model";
 import { makeInfo } from "@/test/fixtures";
 
 describe("表の列の組み立て", () => {
@@ -32,12 +32,24 @@ describe("表の列の組み立て", () => {
   });
 
   it("grid.pinCommon が false なら共通グループも横スクロールする", () => {
-    const info2 = makeInfo({ grid: { pinCommon: false, maxPinnedRatio: 0.9 } });
+    const info2 = makeInfo({ grid: { pinCommon: false, maxPinnedRatio: 0.9, progressUnit: "rows" } });
     const l = buildLayout({ info: info2, visibleLanguages: ["ja", "en"], pinnedLanguages: [], widths: {}, viewportWidth: 0 });
     expect(l.frozen).toEqual([]);
     expect(l.scrolling.slice(0, 3).map((c) => c.cellId)).toEqual(["key", "note", "maxLen"]);
     const pinned = buildLayout({ info: info2, visibleLanguages: ["ja", "en"], pinnedLanguages: ["en"], widths: {}, viewportWidth: 0 });
     expect(pinned.frozen[0]!.cellId).toBe("text@en");
     expect(pinned.groups.map((g) => g.id).slice(0, 2)).toEqual(["lang:en", "@common"]);
+  });
+});
+
+describe("progressColumn", () => {
+  it("設定の grid.progressColumn があればその列。なければ最初のレビュー列、それもなければ最初の選択式の列", () => {
+    const info = makeInfo();
+    expect(progressColumn(info)?.id).toBe("review");
+    expect(progressColumn({ ...info, grid: { ...info.grid, progressColumn: "status" } })?.id).toBe("status");
+    expect(progressColumn({ ...info, columns: info.columns.filter((c) => c.kind !== "review") })?.id).toBe("status");
+    expect(progressColumn({ ...info, columns: info.columns.filter((c) => c.id === "key" || c.id === "text") })).toBeUndefined();
+    // 設定の列が見つからなければ、既定の決め方に戻る。
+    expect(progressColumn({ ...info, grid: { ...info.grid, progressColumn: "nope" } })?.id).toBe("review");
   });
 });

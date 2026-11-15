@@ -31,7 +31,7 @@ export function toRpcError(err: unknown): { code: ApiErrorCode; message: string;
  * call がなければローカルモード（従来どおり、すべて許す）。
  */
 export async function dispatch(
-  workspace: WorkspaceApi & Partial<Pick<Workspace, "withCall" | "redaction">>,
+  workspace: WorkspaceApi & Partial<Pick<Workspace, "withCall" | "redaction" | "roles">>,
   method: string,
   params: unknown,
   call?: CallContext,
@@ -47,8 +47,9 @@ export async function dispatch(
     const invoke = () => fn.call(workspace, params ?? {});
     let result: unknown;
     if (call) {
-      checkMethod(call, method as keyof WorkspaceApi);
-      result = workspace.withCall ? await workspace.withCall(call, invoke) : await runWithCall({ call }, invoke);
+      const roles = workspace.roles?.();
+      checkMethod(call, method as keyof WorkspaceApi, roles);
+      result = workspace.withCall ? await workspace.withCall(call, invoke) : await runWithCall(roles ? { call, roles } : { call }, invoke);
     } else {
       result = await invoke();
     }

@@ -12,3 +12,5 @@ export * from "./host.js";
 export * from "./columns.js";
 export * from "./code-graph.js";
 export * from "./settings-trust.js";
+export * from "./roles.js";
+export * from "./project-reader.js";

@@ -1,5 +1,5 @@
 /**
- * loc-studio の拡張ポイント（9 つの interface。画面側の独自描画 CellRenderer を含む）と、設定の型。
+ * loc-studio の拡張ポイント（10 の interface。画面側の独自描画 CellRenderer を含む）と、設定の型。
  *
  * 方針:
  * - アプリ本体は固定値を持たない。言語の一覧、ステータスの選択肢、列の並びなどは、すべて設定から来る。
@@ -106,8 +106,16 @@ export interface TreeProvider {
   ): Promise<void>;
   /** いまの版を表す文字列（更新時刻やハッシュ、ETag など）。外部で書き換えられたことの検出に使う（任意）。 */
   revision?(resource: ResourceRef, ctx: TreeContext): Promise<string | undefined>;
-  /** 変更の監視（任意）。戻り値は監視をやめる関数。 */
+  /**
+   * 変更の監視（任意）。戻り値は監視をやめる関数。
+   * 実装があれば、ホストはプロジェクトを開いている間これを呼び、知らされたリソースを読み直す。
+   */
   watch?(ctx: TreeContext, onChange: (resource: ResourceRef) => void): () => void;
+  /**
+   * 新しいリソースを作る（任意）。path は置き場所の指定（同梱のツリーではプロジェクトからの相対パス）。
+   * 同じ場所にすでにあれば、上書きせずに例外にする。実装がなければ、画面から新しいリソースは作れない。
+   */
+  create?(path: string, data: Uint8Array, ctx: TreeContext): Promise<ResourceRef>;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,9 +205,20 @@ export interface EnumOption {
   complete?: boolean;
   /** レビュー列で、この判定にコメントを必須にする。 */
   requireComment?: boolean;
+  /**
+   * この値に変えられるのは、いまの値がここに並んだ値のときだけ（遷移の制限）。省略時はどの値からでも変えられる。
+   * 値のないセルは、列の type.default の値として扱う。レビュー列では、直前の判定がいまの値。
+   */
+  from?: string[];
+  /**
+   * この値を選べる役割の ID（Web モード）。省略時は、列を変えられる役割なら誰でも選べる。
+   * ローカルモードとサーバーの管理者には効かない。
+   */
+  roles?: string[];
 }
 
-export type ColumnType = "string" | "number" | "boolean" | { enum: EnumOption[]; default?: string };
+/** "date" は日付（"2026-11-15" の形の文字列）。 */
+export type ColumnType = "string" | "number" | "boolean" | "date" | { enum: EnumOption[]; default?: string };
 
 export type ColumnKind = "key" | "text" | "meta" | "computed" | "actions" | "generated" | "review";
 
@@ -370,13 +389,39 @@ export interface HostDb {
   kv(namespace: string): KvStore;
 }
 
+/** 1 行分の値。entry は行の情報、row は本文と列の値を読む窓口。 */
+export interface RowSnapshot {
+  entry: Entry;
+  row: RowReader;
+}
+
+/**
+ * プロジェクトのリソースと行を読む窓口。ツリーとフォーマットを通して読むので、リソースがローカルのファイルでも
+ * 外部の API でも同じに使える。プラグインは projectRoot のファイルを自分で読まず、これを使う。
+ */
+export interface ProjectReader {
+  /** プロジェクトの言語の定義。 */
+  readonly languages: LanguageDef[];
+  /** 解決済みの列（設定の並び順）。 */
+  readonly columns: ColumnDef[];
+  /** リソースの一覧。Web モードでは、いまの利用者に見えるものだけ。 */
+  resources(): Promise<ResourceRef[]>;
+  /**
+   * リソースの行（リソースの中の並び順）。本文は未保存の編集を含む。
+   * keys で行を、columns で読み込む列ソースの列（省略時はすべて）を絞れる。大きなリソースでは絞ること。
+   */
+  rows(resourceId: string, opts?: { keys?: string[]; columns?: string[] }): Promise<RowSnapshot[]>;
+}
+
 export interface PluginHost {
   db: HostDb;
-  /** いまの利用者。 */
-  user: { name: string };
+  /** いまの利用者。role は Web モードでの役割の ID（ローカルモードとコマンドラインでは undefined）。 */
+  user: { name: string; role?: string };
   secrets: SecretReader;
   env: Record<string, string | undefined>;
   projectRoot: string;
+  /** プロジェクトのリソースと行を読む。 */
+  project: ProjectReader;
   /** 外部の API を呼ぶときに使う。 */
   fetch: typeof fetch;
   log(message: string): void;
@@ -487,8 +532,10 @@ export interface ActionContext {
   row?: RowReader;
   /** target: "review" のときの投稿。 */
   review?: ReviewPost;
-  /** target: "selection" / "file" のときの対象。 */
+  /** target: "selection" / "file" / "column" のときの対象。 */
   entries?: Entry[];
+  /** entries と同じ順に並んだ、各行の値を読む窓口（target: "selection" / "file" / "column"）。 */
+  rows?: RowReader[];
   options: Options;
   secrets: SecretReader;
   env: Record<string, string | undefined>;
@@ -523,7 +570,10 @@ export interface ValidateContext {
   column: ColumnDef;
   /** 言語の定義そのもの（id、basedOn など）。scope: entry の列では undefined。 */
   language?: LanguageDef;
+  /** セルの値を文字列にしたもの（本文はそのまま。値のないセルは ""）。 */
   value: string;
+  /** 列の値そのもの（本文以外の列では、数値や真偽値のまま。値のないセルは undefined）。 */
+  raw?: unknown;
   /** TextSyntax が分けた変数・タグ・制御コード。 */
   tokens: TextToken[];
   /** 基になる言語の本文。原文や、基の本文がない場合は undefined。 */
@@ -545,17 +595,122 @@ export interface ValidationIssue {
   fix?: { label: string; value: string };
 }
 
+/** リソース全体を見るバリデータが受け取る値。 */
+export interface ResourceValidateContext {
+  resource: ResourceRef;
+  /** リソースの全行（リソースの中の並び順）。本文は未保存の編集を含む。 */
+  rows: RowSnapshot[];
+  languages: LanguageDef[];
+  columns: ColumnDef[];
+  /** 設定から渡された値。 */
+  options: Options;
+}
+
+/** リソース全体を見て見つけた問題。どのセルの問題かを key（と language、columnId）で示す。 */
+export interface ResourceIssue extends ValidationIssue {
+  key: string;
+  /** 言語ごとの列のセルのとき必須。 */
+  language?: LanguageId;
+  /** 問題のあるセルの列。省略時は本文の列。 */
+  columnId?: string;
+}
+
+/**
+ * validate（セルごと）と validateResource（リソース全体）の、少なくとも一方を実装する。
+ */
 export interface Validator {
   id: string;
   label: string;
   /** 結果が変わる変更をしたら上げる。キャッシュの鍵に入る。 */
   version: string;
-  /** 対象の列。省略時は本文（kind: "text"）の列。 */
+  /**
+   * validate の対象の列。省略時は本文（kind: "text"）の列。
+   * 本文以外では、値を持つ列（kind: "meta"）を名指しできる。
+   */
   columns?: string[];
   languages?: LanguageId[];
   /** 既定の重さ。設定で上書きできる。省略時は "error"。 */
   severity?: Severity;
-  validate(ctx: ValidateContext): ValidationIssue[] | Promise<ValidationIssue[]>;
+  /** セルを 1 つずつ確かめる。 */
+  validate?(ctx: ValidateContext): ValidationIssue[] | Promise<ValidationIssue[]>;
+  /**
+   * リソース全体を見て確かめる（キーの重複、同じ原文の訳の揺れなど、ほかの行と比べる検証）。
+   * リソースや未保存の編集、列の値が変わるたびに、リソース全体に対して呼ばれる。
+   */
+  validateResource?(ctx: ResourceValidateContext): ResourceIssue[] | Promise<ResourceIssue[]>;
+}
+
+// ---------------------------------------------------------------------------
+// 9. フック（書き込みの前後）
+// ---------------------------------------------------------------------------
+
+/** 変更のきっかけ。manual: 利用者の操作。bulk: 複数行の一括変更。action: アクションの変更点。 */
+export type ChangeCause = "manual" | "bulk" | "action";
+
+export interface CellChange {
+  cell: CellRef;
+  oldValue: unknown;
+  newValue: unknown;
+}
+
+/**
+ * 書き込みのできごと。
+ * - cells.set: 本文以外の列の値を変える（ステータスなど。changes は同じ列・同じ言語のセル）。
+ * - text.save: 未保存の本文をリソースに保存する（changes は本文の列のセル）。
+ * - review.post: レビューを投稿する（after では review に投稿が入る）。
+ * - resource.write: リソースを書く（本文の保存、リソースの中の列の変更、行の追加・削除、リソースの作成で起きる）。
+ * - entries.change: 行を足す・消す・キーを変える（changes はフォーマットに渡すものと同じ）。
+ */
+export type WorkflowEvent =
+  | { type: "cells.set"; resource: ResourceRef; column: ColumnDef; language?: LanguageDef; changes: CellChange[]; cause: ChangeCause }
+  | { type: "text.save"; resource: ResourceRef; column: ColumnDef; changes: CellChange[] }
+  | {
+      type: "review.post";
+      resource: ResourceRef;
+      column: ColumnDef;
+      language?: LanguageDef;
+      cell: CellRef;
+      verdict: string;
+      comment: string;
+      /** 直前の判定（なければ列の type.default）。 */
+      previous?: unknown;
+      /** 保存された投稿（after だけ）。 */
+      review?: ReviewPost;
+    }
+  | { type: "resource.write"; resource: ResourceRef }
+  | { type: "entries.change"; resource: ResourceRef; changes: Change[] };
+
+export interface WorkflowContext {
+  /** 設定の hooks で渡された値。 */
+  options: Options;
+  host: PluginHost;
+}
+
+/** after が返す値。 */
+export interface WorkflowResult {
+  /**
+   * 続けて反映するセルの変更（ステータスを戻すなど）。利用者の役割にかかわらず反映し、変更履歴には
+   * きっかけがフックであること（cause: "hook"）とフックの id が残る。この変更では、フックはもう呼ばれない。
+   * resource.write の after では返せない。
+   */
+  patches?: CellPatch[];
+}
+
+/**
+ * 書き込みの前後に呼ばれる。スタジオごとの決まり（誰がどの状態にできるか、保存の前のチェックアウト、
+ * 差し戻しでステータスを戻す、外部への通知など）を、アプリを変えずに足すための拡張ポイント。
+ */
+export interface WorkflowHook {
+  id: string;
+  /** 受け取るできごとの種類。省略時はすべて。 */
+  events?: WorkflowEvent["type"][];
+  /**
+   * 書き込みの前。文字列を返すと、その書き込みをやめて、文字列を理由として利用者に見せる。
+   * 例外を投げた場合も書き込みをやめる（フックの不具合として扱い、例外のメッセージを見せる）。
+   */
+  before?(event: WorkflowEvent, ctx: WorkflowContext): Promise<string | void> | string | void;
+  /** 書き込みのあと。失敗しても書き込みは取り消さず、警告になる。 */
+  after?(event: WorkflowEvent, ctx: WorkflowContext): Promise<WorkflowResult | void> | WorkflowResult | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +780,7 @@ export interface Plugin {
   generators?: Generator[];
   actions?: Action[];
   validators?: Validator[];
+  hooks?: WorkflowHook[];
   renderers?: CellRenderer[];
 }
 
@@ -684,9 +840,66 @@ export interface StorageConfig {
   schema?: string;
 }
 
+/** 役割に与える権限。見ること（view）は、役割を持つ全員ができる。 */
+export type RoleCapability = "edit" | "review" | "run" | "structure" | "manage";
+
+/**
+ * 役割（Web モード）。利用者にはプロジェクトごとに役割を 1 つ割り当てる。
+ * 省略した絞り込み（editColumns など）は「制限なし」。空の配列は「どれもできない」。
+ */
+export interface RoleDef {
+  /** 画面に出す名前。省略時は役割の ID。 */
+  label?: string;
+  /**
+   * edit: 本文と列の値の変更、保存。review: レビューの投稿と転載。run: アクションと生成の実行。
+   * structure: 行の追加・削除・キーの変更、リソースの作成。
+   * manage: プロジェクト設定の変更、プラグインの再読み込み、ほかの人のジョブの取り消し。
+   */
+  can: RoleCapability[];
+  /** edit で変えられる列の ID（本文の列も含む）。省略時はすべての列。 */
+  editColumns?: string[];
+  /** review で投稿できるレビュー列の ID。省略時はすべてのレビュー列。 */
+  reviewColumns?: string[];
+  /** run で実行できるアクションの ID。省略時は設定の actions のすべて。 */
+  actions?: string[];
+  /** run で生成できる生成列の ID。省略時はすべての生成列。 */
+  generators?: string[];
+  /** 見えるリソースのパス（glob）。省略時はすべて。見えないリソースは、ないものとして扱う。 */
+  resources?: string[];
+}
+
+/** 本文の編集画面の設定。 */
+export interface EditorConfig {
+  /**
+   * 参照欄に、基になる言語（basedOn）のほかに並べる言語。中継の言語（たとえば日本語が原文で、英語を見ながら訳す）に使う。
+   */
+  referenceLanguages?: LanguageId[];
+  /**
+   * 参照欄に出す列の ID（行に 1 つの列と、編集中の言語の列）。備考、話者、文字数の上限などを訳しながら見るために使う。
+   * 省略時は、その言語の生成列だけ。
+   */
+  referenceColumns?: string[];
+  /** 本文の長さの数え方。 */
+  count?: {
+    /**
+     * codepoints: Unicode のコードポイント数（既定）。utf16: UTF-16 の単位の数。bytes: UTF-8 のバイト数。
+     * width: 全角を 2、それ以外を 1 と数えた幅（改行は数えない）。
+     */
+    unit?: "codepoints" | "utf16" | "bytes" | "width";
+    /** true: 変数・タグ・制御コード（記法が分けたトークン）を数えない。 */
+    skipTokens?: boolean;
+  };
+}
+
 export interface ProjectConfig {
   name?: string;
   languages: LanguageDef[];
+  editor?: EditorConfig;
+  /**
+   * 役割の定義（Web モード）。同梱の viewer / translator / reviewer / manager に足すか、同じ ID で置き換える。
+   * サーバーの管理者は、ここの定義にかかわらずすべてできる。
+   */
+  roles?: Record<string, RoleDef>;
   /** プラグインを探すフォルダ（プロジェクトからの相対パス）。既定は ["loc-studio-plugins"]。 */
   pluginDirs?: string[];
   tree?: UseRef;
@@ -699,12 +912,34 @@ export interface ProjectConfig {
   columns?: (ColumnDef | ColumnUse)[];
   generators?: Record<string, UseRef>;
   actions?: UseRef[];
+  /** 書き込みの前後に呼ぶフック。書いた順に呼ぶ。 */
+  hooks?: UseRef[];
   validators?: (string | ValidatorUse)[];
-  validation?: { blockComplete?: Severity | false };
+  validation?: {
+    blockComplete?: Severity | false;
+    /**
+     * 訳文を保存したあとで基になる言語の本文が変わったら「要確認」の印を付けるか。既定は true。
+     * false にすると印を付けない（本文の変更への追従を、フックなど別の決まりで行うスタジオ向け）。
+     */
+    recheck?: boolean;
+  };
   review?: { targets?: UseRef[] };
   storage?: StorageConfig;
   /** ローカル設定の初期値と固定。 */
   localSettings?: { defaults?: Record<string, unknown>; enforce?: Record<string, unknown> };
   languageSets?: Record<string, LanguageId[]>;
-  grid?: { pinCommon?: boolean; maxPinnedRatio?: number };
+  grid?: {
+    pinCommon?: boolean;
+    maxPinnedRatio?: number;
+    /**
+     * ツリーに進捗を出す列の ID（選択肢に complete のある列）。
+     * 省略時は、最初のレビュー列、なければ最初の選択式の列。
+     */
+    progressColumn?: string;
+    /**
+     * 進捗の数え方。rows: 行数（既定）。characters: 原文の文字数（コードポイント数）。words: 原文の語数（空白で区切った数）。
+     * 原文は、その言語の基になる言語（basedOn）の本文。基になる言語のない言語と、行に 1 つの列では、最初の原文の言語の本文。
+     */
+    progressUnit?: "rows" | "characters" | "words";
+  };
 }

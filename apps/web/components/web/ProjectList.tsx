@@ -1,12 +1,12 @@
 "use client";
 import type { WebSession } from "@/components/Studio";
-import { ROLE_LABEL } from "@/lib/client/permissions";
 import { UserMenu } from "@/components/web/UserMenu";
 
 export interface ProjectSummary {
   id: string;
   name: string;
   role?: string;
+  roleLabel?: string;
   languages?: string[];
 }
 
@@ -39,7 +39,7 @@ export function ProjectList({ projects, session, onOpen, loading, error }: { pro
                 <button type="button" className="recent-btn project-btn" onClick={() => onOpen(p.id)} disabled={loading}>
                   <span className="project-btn-name">{p.name}</span>
                   <span className="muted small mono">{p.id}</span>
-                  {p.role && <span className="badge">{ROLE_LABEL[p.role] ?? p.role}</span>}
+                  {p.role && <span className="badge">{p.roleLabel ?? p.role}</span>}
                   {p.languages && <span className="muted small">担当: {p.languages.join(", ")}</span>}
                 </button>
               </li>

@@ -12,6 +12,7 @@ import { loadProjectConfig, UntrustedConfigError } from "./config.js";
 import { discoverPluginEntries } from "./plugin-loader.js";
 import type { PluginCandidate } from "./plugin-loader.js";
 import { openProject } from "./project.js";
+import { canSymlink } from "./testing/symlinks.js";
 
 const sdkPath = fileURLToPath(new URL("../../sdk/src/index.ts", import.meta.url));
 let tmp: string;
@@ -97,34 +98,50 @@ describe("プラグインのハッシュの範囲（C3）", () => {
     expect((await inspectPluginCode(path.join(dir, "p.mjs"))).hash).not.toBe(r1.hash);
   });
 
-  it("フォルダの外に出る相対 import、外のパッケージ、外を指すシンボリックリンクは、確認のときに読み込みエラー", async () => {
+  it("フォルダの外に出る相対 import と、外のパッケージは、確認のときに読み込みエラー", async () => {
     const dir = path.join(root, "loc-studio-plugins");
     await put(path.join(tmp, "evil.mjs"), sideEffect("evil") + "export default {};\n");
     await put(path.join(dir, "esc.mjs"), `import "../../evil.mjs";\nexport default { name: "esc" };\n`);
     await put(path.join(dir, "bare.mjs"), `import x from "left-pad";\nexport default { name: "bare" };\n`);
     await put(path.join(dir, "ok.mjs"), `import fs from "node:fs";\nimport path from "path";\nimport { definePlugin } from "@loc-studio/sdk";\nexport default definePlugin({ name: "ok" });\n`);
-    await put(path.join(dir, "linked", "index.mjs"), `export default { name: "linked" };\n`);
-    await symlink(path.join(tmp, "evil.mjs"), path.join(dir, "linked", "helper.mjs"));
     const p = await openProject(root, { env: {}, sdkPath, trust: () => true });
     const byPath = (name: string) => p.pluginErrors.find((e) => e.path === path.join(dir, name))?.message ?? "";
     expect(byPath("esc.mjs")).toContain("外");
     expect(byPath("bare.mjs")).toContain("left-pad");
-    expect(byPath("linked")).toContain("外");
-    expect(p.registry.plugins().map((x) => x.plugin.name)).toContain("ok");
+    expect(p.registry.plugins().map((x) => x.plugin.name)).toEqual(["ok"]);
     expect(existsSync(marker("evil"))).toBe(false);
     // trust を渡さない（コマンドライン）ときは従来どおり（確かめない）。
     const all = await openProject(root, { env: {}, sdkPath });
     expect(all.registry.plugins().map((x) => x.plugin.name)).toContain("esc");
   });
 
+  it.skipIf(!canSymlink)("フォルダのプラグインの中の、外を指すシンボリックリンクは、確認のときに読み込みエラー（リンク先のコードは動かさない）", async () => {
+    const dir = path.join(root, "loc-studio-plugins");
+    await put(path.join(tmp, "evil.mjs"), sideEffect("evil") + "export default {};\n");
+    await put(path.join(dir, "linked", "index.mjs"), `export default { name: "linked" };\n`);
+    await symlink(path.join(tmp, "evil.mjs"), path.join(dir, "linked", "helper.mjs"));
+    const p = await openProject(root, { env: {}, sdkPath, trust: () => true });
+    expect(p.pluginErrors.find((e) => e.path === path.join(dir, "linked"))?.message ?? "").toContain("外");
+    expect(p.registry.plugins().map((x) => x.plugin.name)).toEqual([]);
+    expect(existsSync(marker("evil"))).toBe(false);
+  });
+
   it("plugin.json の main はフォルダの中であること（信頼のモードによらず）", async () => {
     const dir = path.join(root, "loc-studio-plugins");
     await put(path.join(tmp, "elsewhere.mjs"), sideEffect("main") + "export default { name: 'x' };\n");
     await put(path.join(dir, "pack", "plugin.json"), JSON.stringify({ main: "../../../elsewhere.mjs" }));
+    const entries = await discoverPluginEntries(dir);
+    expect(entries.find((e) => e.root.endsWith("pack"))?.error).toContain("外");
+    await openProject(root, { env: {}, sdkPath });
+    expect(existsSync(marker("main"))).toBe(false);
+  });
+
+  it.skipIf(!canSymlink)("plugin.json の main が、外を指すシンボリックリンクでも読み込まない", async () => {
+    const dir = path.join(root, "loc-studio-plugins");
+    await put(path.join(tmp, "elsewhere.mjs"), sideEffect("main") + "export default { name: 'x' };\n");
     await put(path.join(dir, "pack2", "plugin.json"), JSON.stringify({ main: "entry.mjs" }));
     await symlink(path.join(tmp, "elsewhere.mjs"), path.join(dir, "pack2", "entry.mjs"));
     const entries = await discoverPluginEntries(dir);
-    expect(entries.find((e) => e.root.endsWith("pack"))?.error).toContain("外");
     expect(entries.find((e) => e.root.endsWith("pack2"))?.error).toContain("外");
     await openProject(root, { env: {}, sdkPath });
     expect(existsSync(marker("main"))).toBe(false);

@@ -20,6 +20,8 @@ const KIND_LABEL: Record<string, string> = {
   generator: "生成器",
   action: "アクション",
   validator: "バリデータ",
+  hook: "フック",
+  renderer: "独自描画",
 };
 
 export function PluginsDialog({ onClose, onUntrusted }: { onClose(): void; onUntrusted(): void }) {

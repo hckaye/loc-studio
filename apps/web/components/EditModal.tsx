@@ -1,10 +1,11 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CellInfo, IssueInfo, RowInfo } from "@loc-studio/server";
+import type { CellInfo, IssueInfo, RowInfo, WorkspaceApi } from "@loc-studio/server";
+import { COUNT_LABEL, countText } from "@/lib/client/count";
 import { Dialog } from "@/components/Dialog";
 import { draftByOther } from "@/components/grid/cells";
 import { isRpcError } from "@/lib/client/api";
-import { canEditCell, canEditText, canReview } from "@/lib/client/permissions";
+import { canEditCell, canEditText, canReview, optionProblem } from "@/lib/client/permissions";
 import { Chip, EnumSelect } from "@/components/EnumSelect";
 import { useStudio, useToasts } from "@/components/context";
 import {
@@ -51,8 +52,24 @@ function countLines(s: string): number {
   return s === "" ? 0 : s.split("\n").length;
 }
 
-function countChars(s: string): number {
-  return Array.from(s).length;
+type Token = Awaited<ReturnType<WorkspaceApi["tokens"]>>[number][number];
+
+/** 本文を、変数・タグ・制御コードに色を付けて出す（トークンがまだなければ、そのまま出す）。 */
+function TokenText({ text, tokens }: { text: string; tokens: Token[] | undefined }) {
+  if (!tokens) return <>{text}</>;
+  return (
+    <>
+      {tokens.map((t, i) =>
+        t.kind === "text" ? (
+          <span key={i}>{t.value}</span>
+        ) : (
+          <span key={i} className={`tok tok-${t.kind}`} data-token={t.kind}>
+            {t.value}
+          </span>
+        ),
+      )}
+    </>
+  );
 }
 
 export function EditModal(props: EditModalProps) {
@@ -146,8 +163,81 @@ export function EditModal(props: EditModalProps) {
   const base = useMemo(() => (language.basedOn ? info.languages.find((l) => l.id === language.basedOn) : undefined), [info, language]);
   const baseText = base && detail ? textValue(detail.cells[cellIdOf(textColumn, base.id)]) : undefined;
   const langCols = useMemo(() => languageColumns(info, language.id).filter((c) => c.kind !== "text"), [info, language.id]);
-  const generatedCols = langCols.filter((c) => c.kind === "generated");
   const editableCols = langCols.filter((c) => c.kind !== "generated" && c.kind !== "actions");
+  const editorConfig = info.editor;
+  // 参照欄の言語: 基になる言語と、設定の editor.referenceLanguages（編集中の言語と、重なりは除く）。
+  const refLanguages = useMemo(() => {
+    const ids = [...(base ? [base.id] : []), ...(editorConfig?.referenceLanguages ?? [])].filter((id, i, all) => id !== language.id && all.indexOf(id) === i);
+    return ids.flatMap((id) => info.languages.find((l) => l.id === id) ?? []);
+  }, [info.languages, base, editorConfig, language.id]);
+  // 参照欄の列: 設定の editor.referenceColumns。書かれていなければ、この言語の生成列。
+  const refColumns = useMemo(() => {
+    const ids = editorConfig?.referenceColumns;
+    if (!ids) return langCols.filter((c) => c.kind === "generated");
+    return ids.flatMap((id) => info.columns.find((c) => c.id === id && (c.scope === "entry" || langCols.includes(c))) ?? []);
+  }, [info.columns, editorConfig, langCols]);
+
+  // 参照の本文のトークン（変数・タグの色分けと、訳文への差し込み用）。本文 → トークン。
+  const [refTokens, setRefTokens] = useState<Record<string, Token[]>>({});
+  const refTexts = useMemo(
+    () => (detail ? refLanguages.map((l) => textValue(detail.cells[cellIdOf(textColumn, l.id)])).filter((t) => t !== "") : []),
+    [detail, refLanguages, textColumn],
+  );
+  const refTextsKey = refTexts.join("\u0000");
+  useEffect(() => {
+    if (refTexts.length === 0) return;
+    let cancelled = false;
+    api
+      .tokens({ resourceId, texts: refTexts })
+      .then((lists) => {
+        if (!cancelled) setRefTokens(Object.fromEntries(refTexts.map((t, i) => [t, lists[i] ?? []])));
+      })
+      .catch((err: unknown) => reportError(err, "変数・タグの読み込み"));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, resourceId, refTextsKey]);
+  // 基の本文にある変数・タグ・制御コード（重なりを除く）。押すと訳文のカーソルの位置に入れる。
+  const insertable = useMemo(() => {
+    const tokens = baseText ? refTokens[baseText] : undefined;
+    return [...new Set((tokens ?? []).filter((t) => t.kind !== "text").map((t) => t.value))];
+  }, [baseText, refTokens]);
+  const insertToken = (value: string) => {
+    const ta = textareaRef.current;
+    const start = ta?.selectionStart ?? draft.length;
+    const end = ta?.selectionEnd ?? draft.length;
+    setDraft(draft.slice(0, start) + value + draft.slice(end));
+    requestAnimationFrame(() => {
+      ta?.focus();
+      ta?.setSelectionRange(start + value.length, start + value.length);
+    });
+  };
+
+  // 長さの数え方（設定の editor.count）。skipTokens のときは、入力が止まってから本文をトークンに分けて、文字の部分だけ数える。
+  const countUnit = editorConfig?.count.unit ?? "codepoints";
+  const skipTokens = editorConfig?.count.skipTokens === true;
+  const [draftTokens, setDraftTokens] = useState<{ text: string; tokens: Token[] } | null>(null);
+  useEffect(() => {
+    if (!skipTokens || draft === "") return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api
+        .tokens({ resourceId, texts: [draft] })
+        .then(([tokens]) => {
+          if (!cancelled) setDraftTokens({ text: draft, tokens: tokens ?? [] });
+        })
+        .catch((err: unknown) => reportError(err, "本文の長さの計算"));
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, resourceId, draft, skipTokens]);
+  const counted = skipTokens && draftTokens?.text === draft ? draftTokens.tokens.filter((t) => t.kind === "text").map((t) => t.value).join("") : draft;
+  // 変数を除いて数える設定で、いまの本文のトークンがまだないあいだは「計算中」と分かるようにする。
+  const countPending = skipTokens && draft !== "" && draftTokens?.text !== draft;
 
   /**
    * 確定する。step があれば、そのあと前後の行へ。
@@ -334,28 +424,53 @@ export function EditModal(props: EditModalProps) {
       <div className="edit-body" onKeyDown={onDialogKeyDown}>
         <section className="edit-refs" aria-label="参照">
           <h3 className="pane-title">参照</h3>
-          {base ? (
+          {!base && <p className="muted small">この言語は原文です（基になる言語はありません）。</p>}
+          {refLanguages.map((l) => {
+            const text = detail ? textValue(detail.cells[cellIdOf(textColumn, l.id)]) : undefined;
+            return (
+              <div className="ref-block" key={l.id}>
+                <div className="ref-label">
+                  {l.label} {l.id === base?.id && <span className="muted small">（基になる言語）</span>}
+                </div>
+                <div className="ref-text" {...(l.hint?.dir ? { dir: l.hint.dir } : {})} {...(l.hint?.lang ? { lang: l.hint.lang } : {})}>
+                  {text === undefined ? "読み込み中…" : text === "" ? <span className="muted">（空）</span> : <TokenText text={text} tokens={refTokens[text]} />}
+                </div>
+              </div>
+            );
+          })}
+          {insertable.length > 0 && !readOnly && (
             <div className="ref-block">
               <div className="ref-label">
-                {base.label} <span className="muted small">（基になる言語）</span>
+                原文の変数・タグ <span className="muted small">（押すと本文のカーソルの位置に入れます）</span>
               </div>
-              <div className="ref-text" {...(base.hint?.dir ? { dir: base.hint.dir } : {})}>
-                {baseText === undefined ? "読み込み中…" : baseText === "" ? <span className="muted">（空）</span> : baseText}
+              <div className="tok-chips">
+                {insertable.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`tok-chip${draft.includes(value) ? "" : " missing"}`}
+                    aria-label={`${value} を本文に入れる`}
+                    title={draft.includes(value) ? "本文にあります" : "本文にまだありません"}
+                    onClick={() => insertToken(value)}
+                  >
+                    {value}
+                  </button>
+                ))}
               </div>
             </div>
-          ) : (
-            <p className="muted small">この言語は原文です（基になる言語はありません）。</p>
           )}
-          {generatedCols.map((c) => {
-            const cell = detail?.cells[cellIdOf(c, language.id)] ?? row?.cells[cellIdOf(c, language.id)];
+          {refColumns.map((c) => {
+            const id = cellIdOf(c, c.scope === "language" ? language.id : undefined);
+            const cell = detail?.cells[id] ?? row?.cells[id];
             const state = cell?.generated ?? "missing";
+            const option = findOption(c, cell?.value);
             return (
               <div className="ref-block" key={c.id}>
                 <div className="ref-label">
                   {columnLabel(c)}{" "}
-                  <span className={`gen-badge gen-badge-${state}`}>{state === "fresh" ? "最新" : state === "stale" ? "古い" : "未生成"}</span>
+                  {c.kind === "generated" && <span className={`gen-badge gen-badge-${state}`}>{state === "fresh" ? "最新" : state === "stale" ? "古い" : "未生成"}</span>}
                 </div>
-                <div className="ref-text">{displayValue(cell?.value) || <span className="muted">（なし）</span>}</div>
+                <div className="ref-text">{option ? <Chip option={option} /> : displayValue(cell?.value) || <span className="muted">（なし）</span>}</div>
               </div>
             );
           })}
@@ -411,7 +526,9 @@ export function EditModal(props: EditModalProps) {
             />
           </div>
           <div className="edit-counts" aria-live="polite">
-            <span>{countChars(draft)} 文字</span>
+            <span data-count-unit={countUnit} title={skipTokens ? "変数・タグを除いて数えています" : undefined}>
+              {countPending ? "…" : countText(counted, countUnit)} {COUNT_LABEL[countUnit]}
+            </span>
             <span>{countLines(draft)} 行</span>
             {changed && <span className="mark-unsaved-text">● 編集中</span>}
             {!changed && cellNow?.draft && <span className="mark-unsaved-text">● 未保存の変更あり</span>}
@@ -478,6 +595,7 @@ export function EditModal(props: EditModalProps) {
                     label={columnLabel(c)}
                     {...(cell?.stale ? { stale: true } : {})}
                     {...(!canEditCell(info, gc).ok ? { disabled: true, title: canEditCell(info, gc).reason } : {})}
+                    optionProblem={(o) => optionProblem(info, c, o, raw)}
                     onChoose={(v) => {
                       void props.onSetCell(row, gc, v).then((updated) => {
                         if (updated) setRow((r) => (r ? { ...r, cells: { ...r.cells, [gc.cellId]: updated } } : r));
@@ -489,6 +607,7 @@ export function EditModal(props: EditModalProps) {
                     key={`${row.key}:${gc.cellId}:${displayValue(cell?.value)}`}
                     label={columnLabel(c)}
                     kind={gc.kind}
+                    {...(c.type === "date" ? { date: true } : {})}
                     initial={displayValue(cell?.value)}
                     disabledReason={canEditCell(info, gc).ok ? undefined : canEditCell(info, gc).reason}
                     onCommit={(v) => {
@@ -602,12 +721,15 @@ export function issueSegments(text: string, issues: IssueInfo[]): { text: string
 function MetaInput({
   label,
   kind,
+  date,
   initial,
   onCommit,
   disabledReason,
 }: {
   label: string;
   kind: "string" | "number";
+  /** 日付の列（日付の入力欄にし、空にしたら値を消す）。 */
+  date?: boolean;
   initial: string;
   onCommit(v: unknown): void;
   disabledReason?: string | undefined;
@@ -623,6 +745,7 @@ function MetaInput({
       setError(null);
       return onCommit(n);
     }
+    if (date && value === "") return onCommit(null);
     onCommit(value);
   };
   return (
@@ -630,6 +753,7 @@ function MetaInput({
       <input
         className={`input small${changed ? " changed" : ""}`}
         aria-label={label}
+        {...(date ? { type: "date" } : {})}
         value={value}
         inputMode={kind === "number" ? "decimal" : undefined}
         disabled={disabledReason !== undefined}

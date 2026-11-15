@@ -183,20 +183,27 @@ Web モードのサーバーは、画面の本番ビルド（Next.js の standal
 
 管理者は、サーバー全体の管理者です。利用者と権限を管理でき、すべてのプロジェクトで manager として扱われます。管理者でない利用者は、プロジェクトごとに役割を 1 つ割り当てられます。割り当てのないプロジェクトは開けず、一覧にも出ません。
 
+役割は、プロジェクトごとに決められます。次の表は、同梱の 4 つの役割です。プロジェクト設定の `roles` で、役割を足したり、同梱の役割を置き換えたりできます。触れる列、実行できるアクション、見えるリソースを役割ごとに絞ることもできます（[CONFIG.md の roles](CONFIG.md#roles)）。
+
 | できること | viewer | translator | reviewer | manager |
 | --- | --- | --- | --- | --- |
 | 見る（行、履歴、レビュー、検索、検証）と、自分の設定の変更 | ○ | ○ | ○ | ○ |
 | 本文の編集と保存、列の値の変更（レビュー列以外） | － | ○ | － | ○ |
 | レビューの投稿と転載 | － | － | ○ | ○ |
 | アクションと生成の実行 | － | ○ | ○ | ○ |
+| 行の追加・削除・キーの変更、リソースの作成 | － | － | － | ○ |
 | ほかの人が始めたジョブの取り消し | － | － | － | ○ |
 | プロジェクト設定の一部の変更（下記）、プラグインの再読み込み | － | － | － | ○ |
 | プロジェクト設定のそのほかの項目の変更 | 管理者だけ | | | |
 | 利用者と権限の管理（サーバー全体） | 管理者だけ | | | |
 
-画面では、役割は「閲覧」「翻訳」「レビュー」「管理」と表示します。
+画面では、役割の定義の `label` を表示します（同梱の役割は「閲覧」「翻訳」「レビュー」「管理」）。
 
-manager が変えられるプロジェクト設定の項目は、`name`、`languages`、`columns`、`validators`、`validation`、`languageSets`、`grid`、`localSettings` です。`storage`、`pluginDirs`、`tree`、`formats`、`syntaxes`、`sources`、`generators`、`actions`、`review` は、サーバーの管理者だけが変えられます。これらはサーバー上で動くコードや、ファイルと DB の場所を決める項目だからです。管理者でない人がこれらを含む変更を送ると、変更全体を断ります（`forbidden`、`data.keys` に該当する項目）。設定にない項目は `invalid` です。
+割り当てられるのは、そのプロジェクトの役割だけです。プロジェクトにない役割を割り当てようとすると `invalid` で断ります。プロジェクトを開けないとき（設定が壊れているなど）は、同梱の役割だけを割り当てられます。割り当てたあとで役割が設定から消えると、その利用者は、見ることも含めて何もできなくなります（`forbidden`）。
+
+ステータスや判定の値ごとに、選べる役割を決めることもできます（[CONFIG.md の列挙の選択肢](CONFIG.md#列挙enumの選択肢)の `roles`）。
+
+`manage` の権限がある役割（同梱では manager）が変えられるプロジェクト設定の項目は、`name`、`languages`、`columns`、`validators`、`validation`、`languageSets`、`grid`、`editor`、`localSettings` です。`storage`、`pluginDirs`、`tree`、`formats`、`syntaxes`、`sources`、`generators`、`actions`、`hooks`、`review`、`roles` は、サーバーの管理者だけが変えられます。`roles` 以外は、サーバー上で動くコードや、ファイルと DB の場所を決める項目だからです。`roles` は、`manage` の権限がある人が自分の役割の絞り込みを外せないようにするためです。管理者でない人がこれらを含む変更を送ると、変更全体を断ります（`forbidden`、`data.keys` に該当する項目）。設定にない項目は `invalid` です。
 
 割り当てに言語の一覧を付けると、その利用者が編集とレビューをできるのは、その言語のセルだけになります。共通グループ（entry スコープ）の列は、言語の制限を受けません。
 
@@ -235,7 +242,7 @@ manager が変えられるプロジェクト設定の項目は、`name`、`langu
 
 同じセルを 2 人が編集した場合、画面は編集を始めたときの値をサーバーに渡します。そのあいだにほかの人がそのセルを確定していたら、サーバーは上書きせず、画面に「ほかの人が先にこのセルを変更しました」のダイアログが出ます。両方の値を見比べて、「相手の変更を使う」か「自分の変更で上書きする」を選びます。ステータスなどの列の値は、ローカルモードと同じく版番号で競合を検出し、「ほかの人が先に変更しました」のダイアログが出ます。
 
-ジョブには開始した人が残ります。ほかの人が始めたジョブを取り消せるのは manager だけです。
+ジョブには開始した人が残ります。ほかの人が始めたジョブを取り消せるのは、`manage` の権限がある役割（同梱では manager）だけです。
 
 1 回の要求で扱える量には上限があります。これはローカルモードでも同じです。
 
@@ -408,17 +415,22 @@ Web の層の流れは次のとおりです。クッキーのトークンを `au
 
 ### 10.5 権限の表（`METHOD_CAPABILITIES`）
 
+役割の列は、同梱の役割の場合です。プロジェクト設定の `roles` で決めた役割は、その `can` で決まります。
+
 | 権限 | viewer | translator | reviewer | manager | メソッド |
 | --- | --- | --- | --- | --- | --- |
-| view | ○ | ○ | ○ | ○ | info, tree, stats, rows, rowDetail, history, reviews, textVersion, validateText, search, settings, plugins, jobs, job, changes, validate, reloadResource |
+| view | ○ | ○ | ○ | ○ | info, tree, stats, rows, rowDetail, history, reviews, textVersion, validateText, search, tokens, settings, plugins, jobs, job, changes, validate, reloadResource |
 | self | ○ | ○ | ○ | ○ | setLocalSetting（`user.name` と `secrets.*` は forbidden） |
 | edit | － | ○ | － | ○ | setText, discardDrafts, save, saveAll, setCell, setCells |
 | review | － | － | ○ | ○ | postReview, forwardReview |
-| run | － | ○ | ○ | ○ | runAction, generate, cancelJob（ほかの人のジョブは manager だけ） |
+| run | － | ○ | ○ | ○ | runAction, generate, cancelJob（ほかの人のジョブは `manage` の権限がある役割だけ） |
+| structure | － | － | － | ○ | editEntries, createResource |
 | manage | － | － | － | ○ | updateProjectSettings（管理者だけの項目は 6 章）, reloadPlugins |
 | local-only | － | － | － | － | trustPlugins, untrustPlugins |
 
-表は `packages/server/src/permissions.ts` にあります。`WorkspaceApi` にメソッドを足して表に足さないと、型の確認で失敗します。
+メソッドと権限の対応は `packages/server/src/permissions.ts`、同梱の役割は `packages/core/src/roles.ts` にあります。`WorkspaceApi` にメソッドを足して表に足さないと、型の確認で失敗します。
+
+メソッドを呼べるかに加えて、書き込みの直前に、役割の絞り込み（`editColumns`、`reviewColumns`、`actions`、`generators`）と言語の制限を確かめます。役割の `resources` で見えないリソースは、どのメソッドでも `not-found` です。
 
 ### 10.6 サーバーの設定の API
 

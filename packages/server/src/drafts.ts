@@ -128,6 +128,21 @@ export class DraftStore {
     }
   }
 
+  /** キーの変更に追従する（新しいキーにすでにドラフトがある言語は、そちらを残す）。 */
+  async renameKey(resourceId: string, oldKey: string, newKey: string): Promise<void> {
+    const moved = this.list(resourceId).filter((d) => d.key === oldKey);
+    if (moved.length === 0) return;
+    await this.remove(moved);
+    for (const d of moved) {
+      if (!this.get(resourceId, newKey, d.language)) await this.put({ ...d, key: newKey });
+    }
+  }
+
+  /** 消した行のドラフトを捨てる。 */
+  async removeKey(resourceId: string, key: string): Promise<void> {
+    await this.remove(this.list(resourceId).filter((d) => d.key === key));
+  }
+
   private bump(resourceId: string): void {
     this.versions.set(resourceId, (this.versions.get(resourceId) ?? 0) + 1);
   }

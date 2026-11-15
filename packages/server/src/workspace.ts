@@ -6,6 +6,7 @@ import { builtinPlugin } from "@loc-studio/builtin";
 import {
   cliSettingsFromEnv,
   createPluginHost,
+  createProjectReader,
   expandEnv,
   loadProjectConfig,
   UntrustedConfigError,
@@ -25,17 +26,18 @@ import { openRestricted } from "./restricted.js";
 import type { Workspace, WorkspaceOptions } from "./api-types.js";
 import { WsContext } from "./context.js";
 import { discardDrafts, save, saveAll, setCell, setCells, setText } from "./editing.js";
+import { createResource, editEntries, followStableIds } from "./structure.js";
 import { generate } from "./generate.js";
 import { textHash } from "./hash.js";
 import { history, textVersion } from "./history.js";
 import { info, plugins } from "./plugins-api.js";
-import { validateText } from "./issues.js";
+import { tokens, validateText } from "./issues.js";
 import { forwardReview, postReview, reviews } from "./reviews.js";
 import { rowDetail, rows, stats, tree } from "./rows.js";
 import { search } from "./search.js";
 import { currentCall, runWithCall } from "./call-context.js";
 import { maskUrl, openPostgres } from "./pg-store.js";
-import { ROLES } from "./permissions.js";
+import { canManage } from "./permissions.js";
 import { rendererModule } from "./renderers.js";
 import type { CallContext } from "./api-types.js";
 import { trustChecker, trustPlugins, untrustPlugins } from "./trust.js";
@@ -102,6 +104,7 @@ function makeOuter(holder: { impl: Workspace }, opts: WorkspaceOptions): Workspa
   ws.waitForJob = (id) => holder.impl.waitForJob(id);
   ws.rendererModule = (id) => holder.impl.rendererModule(id);
   ws.withCall = (call, fn) => holder.impl.withCall(call, fn);
+  ws.roles = () => holder.impl.roles();
   ws.redaction = () => holder.impl.redaction();
   ws.close = () => holder.impl.close();
   return ws;
@@ -183,12 +186,27 @@ async function openFull(opts: WorkspaceOptions): Promise<Workspace> {
     localDb = await openStore({ path: localDbPath, userName });
     const sharedStore = shared;
     // ctx ができる前にプラグインが秘密情報を読むことはないが、念のため ctx 経由で読む。
+    const opened = (): WsContext => {
+      if (!ctx) throw new Error("host.project は、プロジェクトを開き終えるまで使えません（ツリーの list の中などでは使えません）。");
+      return ctx;
+    };
     const host = createPluginHost({
       db: sharedStore,
       userName,
+      userRole: () => currentCall()?.role,
       projectRoot: root,
       env: projectEnv,
       secrets: { get: (name) => ctx?.secrets.get(name) },
+      // 解析結果のキャッシュ、未保存の編集、役割の resources（見えるリソース）を通して読む。
+      project: createProjectReader({
+        project: () => opened().project,
+        resources: () => opened().docs.allResources(),
+        entries: async (resourceId) => {
+          const doc = await opened().docs.get(resourceId);
+          return { resource: doc.resource, entries: doc.entries };
+        },
+        draftText: (resourceId, key, language) => opened().drafts.get(resourceId, key, language)?.value,
+      }),
     });
     const project: Project = await openProject(root, {
       ...(trust ? { trust } : {}),
@@ -217,7 +235,11 @@ async function openFull(opts: WorkspaceOptions): Promise<Workspace> {
       ...(opts.revisionCheckIntervalMs !== undefined ? { revisionCheckIntervalMs: opts.revisionCheckIntervalMs } : {}),
     });
     await ctx.drafts.load();
+    const ready = ctx;
+    ctx.docs.onLoaded = (state) => followStableIds(ready, state);
+    ctx.startWatching();
   } catch (err) {
+    ctx?.stopWatching();
     shared?.close();
     localDb?.close();
     throw err;
@@ -228,7 +250,7 @@ async function openFull(opts: WorkspaceOptions): Promise<Workspace> {
 /** CallContext の形を確かめる（ホストのアプリが作るものだが、権限の判定の元なので厳しく見る）。 */
 export function validateCall(call: CallContext): void {
   if (typeof call?.user?.name !== "string" || call.user.name === "") throw new ApiError("invalid", "CallContext の user.name がありません。");
-  if (!ROLES.includes(call.role)) throw new ApiError("invalid", `CallContext の role "${String(call.role)}" は使えません。`);
+  if (typeof call.role !== "string" || call.role === "") throw new ApiError("invalid", "CallContext の role がありません。");
   if (call.languages !== undefined && (!Array.isArray(call.languages) || call.languages.some((l) => typeof l !== "string"))) {
     throw new ApiError("invalid", "CallContext の languages は文字列の配列にしてください。");
   }
@@ -256,6 +278,7 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
     textVersion: live(async (p) => textVersion(ctx, p)),
     validateText: live(async (p) => validateText(ctx, p)),
     search: live(async (p) => search(ctx, p)),
+    tokens: live(async (p) => tokens(ctx, p)),
     settings: live(async () => settings(ctx)),
     plugins: live(async () => plugins(ctx)),
     validate: live(async (p) => validate(ctx, p ?? {})),
@@ -280,13 +303,15 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
     runAction: live(async (p) => runAction(ctx, p)),
     generate: live(async (p) => generate(ctx, p)),
     cancelJob: live(async (p) => {
-      // Web モードでは、ほかの人が始めたジョブを止められるのは manager だけ。
+      // Web モードでは、ほかの人が始めたジョブを止められるのは manage の権限がある人だけ。
       const call = currentCall();
-      if (call && call.role !== "manager" && ctx.jobs.get(p?.id).startedBy !== call.user.name) {
-        throw new ApiError("forbidden", "ほかの人が始めたジョブは止められません（manager だけができます）。");
+      if (call && !canManage() && ctx.jobs.get(p?.id).startedBy !== call.user.name) {
+        throw new ApiError("forbidden", "ほかの人が始めたジョブは止められません（manage の権限がある役割だけができます）。");
       }
       return ctx.jobs.cancel(p?.id);
     }),
+    editEntries: live(async (p) => editEntries(ctx, p)),
+    createResource: live(async (p) => createResource(ctx, p)),
     setLocalSetting: live(async (p) => setLocalSetting(ctx, p)),
     updateProjectSettings: live(async (p) => updateProjectSettings(ctx, p, infoFn)),
     reloadPlugins: live(async () => {
@@ -298,6 +323,7 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
       ctx.bump();
       return doc.revision !== undefined ? { revision: doc.revision } : {};
     }),
+    roles: () => ctx.project.roles(),
     waitForJob: (id) => ctx.jobs.wait(id),
     rendererModule: async (id) => (closed ? undefined : rendererModule(ctx, id)),
     async withCall(call, fn) {
@@ -308,11 +334,12 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
         local: ctx.userSettings ? await ctx.userSettings.get(call.user.name) : {},
       };
       delete layers.cli;
-      return runWithCall({ call, layers }, fn);
+      return runWithCall({ call, layers, roles: ctx.project.roles() }, fn);
     },
     async close() {
       if (closed) return;
       closed = true;
+      ctx.stopWatching();
       await ctx.jobs.close();
       ctx.shared.close();
       ctx.local.close();

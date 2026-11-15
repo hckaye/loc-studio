@@ -10,7 +10,7 @@ import type { PluginCandidate } from "./plugin-loader.js";
 import { stableStringify } from "./validation.js";
 
 /** 基盤の項目（Web モードでは管理者だけが変えられ、確認のモードでは設定ファイルの信頼のハッシュに入る）。 */
-export const INFRA_CONFIG_KEYS = ["storage", "pluginDirs", "tree", "formats", "syntaxes", "sources", "generators", "actions", "review"] as const;
+export const INFRA_CONFIG_KEYS = ["storage", "pluginDirs", "tree", "formats", "syntaxes", "sources", "generators", "actions", "hooks", "review"] as const;
 
 /** どのモードでも ${env:NAME} やプラグインのホストの env に出さない環境変数（秘密は host.secrets だけで読む）。 */
 const RESERVED_ENV = new Set(["LOC_STUDIO_LOCAL_TOKEN", "LOC_STUDIO_INTERNAL_SECRET", "LOC_STUDIO_ADMIN_USER", "LOC_STUDIO_ADMIN_PASSWORD"]);
@@ -293,6 +293,7 @@ export function summarizeInfra(json: Record<string, unknown>, envNames: string[]
     if (isPlainObject(entries)) for (const [name, ref] of Object.entries(entries)) entry(`${label} ${name}`, ref, ["use"], name);
   }
   if (Array.isArray(json.actions)) json.actions.forEach((a, i) => entry(`アクション[${i}]`, a));
+  if (Array.isArray(json.hooks)) json.hooks.forEach((h, i) => entry(`フック[${i}]`, h));
   const review = json.review;
   if (isPlainObject(review)) {
     if (Array.isArray(review.targets)) review.targets.forEach((t, i) => entry(`レビュー先[${i}]`, t));
@@ -304,12 +305,18 @@ export function summarizeInfra(json: Record<string, unknown>, envNames: string[]
     }
   }
   // 形の違う値（配列のはずがオブジェクトなど）も、何も省かずに出す。
-  for (const k of ["formats", "syntaxes", "actions", "sources", "generators"] as const) {
+  for (const k of ["formats", "syntaxes", "actions", "hooks", "sources", "generators"] as const) {
     const v = json[k];
-    const expectArray = k === "formats" || k === "syntaxes" || k === "actions";
+    const expectArray = k === "formats" || k === "syntaxes" || k === "actions" || k === "hooks";
     if (v !== undefined && (expectArray ? !Array.isArray(v) : !isPlainObject(v))) out.push(stripImportant(leafRow(k, v, k)));
   }
-  const runsCode = json.tree !== undefined || isPlainObject(json.generators) || Array.isArray(json.actions) || isPlainObject(json.sources) || (isPlainObject(review) && Array.isArray(review.targets));
+  const runsCode =
+    json.tree !== undefined ||
+    isPlainObject(json.generators) ||
+    Array.isArray(json.actions) ||
+    Array.isArray(json.hooks) ||
+    isPlainObject(json.sources) ||
+    (isPlainObject(review) && Array.isArray(review.targets));
   if (runsCode) {
     out.push({
       label: "秘密情報",

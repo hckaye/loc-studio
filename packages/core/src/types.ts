@@ -21,6 +21,7 @@ export type ExtensionKind =
   | "generator"
   | "action"
   | "validator"
+  | "hook"
   | "renderer";
 
 /** プラグインがどの層から来たか。 */
@@ -69,6 +70,8 @@ export interface ValidationTarget {
   column: ColumnDef;
   language?: LanguageDef;
   value: string;
+  /** 列の値そのもの（本文以外の列）。 */
+  raw?: unknown;
   /** 基になる言語の本文。 */
   base?: { language: LanguageDef; value: string };
   row: RowReader;

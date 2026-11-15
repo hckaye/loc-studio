@@ -8,10 +8,11 @@ import type { ExtensionKind } from "@loc-studio/core";
 import type { Action } from "@loc-studio/sdk";
 import type { ActionInfo, PluginInfo, ProjectInfo } from "./api-types.js";
 import type { WsContext } from "./context.js";
+import { enumOf } from "./context.js";
 import { listSettings } from "./settings-api.js";
 import { untrustedInfo } from "./trust.js";
 import { currentCall } from "./call-context.js";
-import { permissionsFor } from "./permissions.js";
+import { permissionsFor, roleList } from "./permissions.js";
 import { listRenderers } from "./renderers.js";
 
 function actionInfo(a: Action): ActionInfo {
@@ -53,6 +54,41 @@ export async function info(ctx: WsContext): Promise<ProjectInfo> {
   if (project.untrustedPlugins.length > 0) {
     warnings.push(`信頼の確認を待っているプラグインが ${project.untrustedPlugins.length} 件あり、読み込んでいません。`);
   }
+  // 編集画面の設定。プロジェクトにない言語や列は使わずに知らせる。
+  const editor = config.editor ?? {};
+  const listOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  const referenceLanguages = listOf(editor.referenceLanguages).filter((id) => {
+    if (project.language(id)) return true;
+    warnings.push(`設定の editor.referenceLanguages にある言語 "${id}" は、プロジェクトにありません。`);
+    return false;
+  });
+  const referenceColumns =
+    editor.referenceColumns === undefined
+      ? undefined
+      : listOf(editor.referenceColumns).filter((id) => {
+          if (ctx.column(id)) return true;
+          warnings.push(`設定の editor.referenceColumns にある列 "${id}" は、設定の columns にありません。`);
+          return false;
+        });
+  const UNITS = ["codepoints", "utf16", "bytes", "width"] as const;
+  let unit: (typeof UNITS)[number] = "codepoints";
+  if (editor.count?.unit !== undefined) {
+    if ((UNITS as readonly string[]).includes(editor.count.unit)) unit = editor.count.unit;
+    else warnings.push(`設定の editor.count.unit は ${UNITS.join(" / ")} のどれかにしてください（"${String(editor.count.unit)}"）。コードポイントで数えます。`);
+  }
+  // ツリーに進捗を出す列。選択式でない列や、設定にない列は使わない。
+  let progressColumn: string | undefined;
+  const wantedProgress: unknown = config.grid?.progressColumn;
+  if (wantedProgress !== undefined) {
+    const column = typeof wantedProgress === "string" ? ctx.column(wantedProgress) : undefined;
+    const usable = column !== undefined && enumOf(column) !== undefined && (column.kind === "meta" || column.kind === "review");
+    if (usable) progressColumn = column.id;
+    else warnings.push(`設定の grid.progressColumn "${String(wantedProgress)}" は、選択式の列（ステータスやレビュー）の ID にしてください。既定の列の進捗を出します。`);
+  }
+  const wantedUnit: unknown = config.grid?.progressUnit;
+  if (wantedUnit !== undefined && wantedUnit !== "rows" && wantedUnit !== "characters" && wantedUnit !== "words") {
+    warnings.push(`設定の grid.progressUnit は rows / characters / words のどれかにしてください（"${String(wantedUnit)}"）。行数で数えます。`);
+  }
   warnings.push(...ctx.runtimeWarnings);
   return {
     name: config.name ?? path.basename(project.root),
@@ -60,7 +96,8 @@ export async function info(ctx: WsContext): Promise<ProjectInfo> {
     languages: project.languages,
     columns: ctx.columns(),
     languageSets: config.languageSets ?? {},
-    grid: { pinCommon: config.grid?.pinCommon ?? true, maxPinnedRatio: config.grid?.maxPinnedRatio ?? 0.6 },
+    grid: { pinCommon: config.grid?.pinCommon ?? true, maxPinnedRatio: config.grid?.maxPinnedRatio ?? 0.6, ...(progressColumn !== undefined ? { progressColumn } : {}), progressUnit: ctx.progressUnit() },
+    editor: { referenceLanguages, ...(referenceColumns ? { referenceColumns } : {}), count: { unit, skipTokens: editor.count?.skipTokens === true } },
     user: { name: user.value, source: user.source, locked: user.locked },
     storage: { path: ctx.storagePath, shared: ctx.storageShared },
     actions: ctx.configuredActions().map((a) => actionInfo(a.action)),
@@ -72,7 +109,8 @@ export async function info(ctx: WsContext): Promise<ProjectInfo> {
     untrustedPlugins: project.untrustedPlugins.length,
     changeSeq: await ctx.shared.changeSeq(),
     localSettings: Object.fromEntries(listSettings(ctx).map((s) => [s.key, s.value])),
-    permissions: permissionsFor(currentCall()),
+    permissions: permissionsFor(currentCall(), project.roles()),
+    roles: roleList(project.roles()),
     renderers,
   };
 }

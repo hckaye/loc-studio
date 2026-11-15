@@ -1,7 +1,7 @@
 /**
  * ServerRuntime: Web モードで 2 人・2 プロジェクト、ローカルモード。
  */
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +16,10 @@ let rt: ServerRuntime | undefined;
 beforeEach(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), "loc-runtime-"));
   for (const id of ["p1", "p2"]) await cp(SAMPLE_PROJECT, path.join(tmp, id), { recursive: true });
+  // p1 の設定にだけ、役割 lqa を足す。
+  const p1Config = path.join(tmp, "p1", "loc-studio.project.json");
+  const json = JSON.parse(await readFile(p1Config, "utf8")) as Record<string, unknown>;
+  await writeFile(p1Config, JSON.stringify({ ...json, roles: { lqa: { label: "LQA", can: ["review"] } } }));
   // p1 のプロジェクトのフォルダに独自描画のプラグインを置く。
   await mkdir(path.join(tmp, "p1", "loc-studio-plugins", "bars"), { recursive: true });
   await writeFile(path.join(tmp, "p1", "loc-studio-plugins", "bars", "index.mjs"), `export default { name: "bars", renderers: [{ id: "bars.bar", module: "web/bar.mjs" }] };`);
@@ -67,7 +71,16 @@ describe("Web モード", () => {
 
     const alice = (await auth.authenticate((await auth.login({ name: "alice", password: "alice-password", clientAddress: "127.0.0.1" })).token)) as AuthUser;
     const bob = (await auth.login({ name: "bob", password: "bob-password", clientAddress: "127.0.0.1" })).user;
-    expect(await r.projects(alice)).toEqual([{ id: "p1", name: "Project 1", role: "translator", languages: ["ko"] }]);
+    // 割り当てられるのは、そのプロジェクトの役割だけ（p1 の設定にだけ lqa がある）。
+    await expect(r.admin.setMembership(root, "p1", "bob", { role: "god" })).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("lqa") });
+    await expect(r.admin.setMembership(root, "p2", "alice", { role: "lqa" })).rejects.toMatchObject({ code: "invalid" });
+    await r.admin.setMembership(root, "p1", "bob", { role: "lqa" });
+    expect(await r.projects(bob)).toEqual([
+      { id: "p1", name: "Project 1", role: "lqa", roleLabel: "LQA" },
+      { id: "p2", name: "Project 2", role: "reviewer", roleLabel: "レビュー" },
+    ]);
+    await r.admin.removeMembership(root, "p1", "bob");
+    expect(await r.projects(alice)).toEqual([{ id: "p1", name: "Project 1", role: "translator", roleLabel: "翻訳", languages: ["ko"] }]);
     expect((await r.projects(root)).map((p) => [p.id, p.role])).toEqual([
       ["p1", "manager"],
       ["p2", "manager"],

@@ -13,6 +13,17 @@ function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+const RESPONSE_DELAY_MS = 0;
+
+/**
+ * 操作の途中は、画面がボタンを無効にする。無効のボタンを押しても何も起きないので、
+ * 前の操作が終わって有効になるのを待ってから押す。
+ */
+async function press(find: () => HTMLElement): Promise<void> {
+  await waitFor(() => expect((find() as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(find());
+}
+
 function installFetch(routes: Record<string, Handler>) {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   const fn = vi.fn(async (input: string, init?: RequestInit) => {
@@ -23,6 +34,9 @@ function installFetch(routes: Record<string, Handler>) {
     const h = routes[path] ?? (path.startsWith("/api/rpc/") ? routes["/api/rpc/*"] : undefined);
     if (!h) return json(404, { error: { code: "not-found", message: `no route ${path}` } });
     const r = await h({ ...body, __path: path });
+    // 本物の fetch と同じく、応答は呼び出しと同じタスクの中では返らない。
+    // すぐ返すと、「前の操作が終わる前に次のボタンを押す」テストの誤りが、混んでいるときにしか表に出ない。
+    await new Promise((resolve) => setTimeout(resolve, RESPONSE_DELAY_MS));
     return json(r.status ?? 200, r.body);
   });
   vi.stubGlobal("fetch", fn);
@@ -32,7 +46,7 @@ function installFetch(routes: Record<string, Handler>) {
 const user = { name: "tom", displayName: "Tom", admin: false, disabled: false, hasPassword: true, createdAt: "", updatedAt: "" };
 
 function rpcRoutes(over: Partial<Record<string, unknown>> = {}) {
-  const info = makeInfo({ permissions: { role: "translator", can: { edit: true, review: false, run: true, manage: false }, languages: ["en"] } });
+  const info = makeInfo({ permissions: { role: "translator", can: { edit: true, review: false, run: true, structure: false, manage: false }, languages: ["en"] } });
   const { api } = mockApi(info);
   let unauthorized = false;
   const handler: Handler = async (body) => {
@@ -60,7 +74,7 @@ describe("Web モード: ログイン", () => {
       "/api/session": () => ({ body: { mode: "web", recentProjects: [], desktop: false } }),
       "/api/auth/me": () =>
         loggedIn
-          ? { body: { result: { mode: "web", user, admin: false, authMode: "password", projects: [{ id: "game", name: "TestGame", role: "translator", languages: ["en"] }, { id: "other", name: "Other", role: "viewer" }] } } }
+          ? { body: { result: { mode: "web", user, admin: false, authMode: "password", projects: [{ id: "game", name: "TestGame", role: "translator", roleLabel: "翻訳", languages: ["en"] }, { id: "other", name: "Other", role: "lqa" }] } } }
           : { status: 401, body: { error: { code: "unauthorized", message: "ログインしてください。", data: { authMode: "password" } } } },
       "/api/auth/login": (b) => {
         if (b["password"] !== "right-password") return { status: 401, body: { error: { code: "unauthorized", message: "名前かパスワードが違います。" } } };
@@ -85,7 +99,8 @@ describe("Web モード: ログイン", () => {
     const game = await screen.findByRole("button", { name: /TestGame/ });
     expect(game.textContent).toContain("翻訳");
     expect(game.textContent).toContain("担当: en");
-    expect(screen.getByRole("button", { name: /Other/ }).textContent).toContain("閲覧");
+    // サーバーが表示名を返さない役割（プロジェクトをまだ開いていない、設定の役割）は ID のまま出す
+    expect(screen.getByRole("button", { name: /Other/ }).textContent).toContain("lqa");
   });
 
   it("続けて失敗して待たされているときは、待つ時間を出してボタンを止める", async () => {
@@ -101,12 +116,21 @@ describe("Web モード: ログイン", () => {
     );
     fireEvent.change(await screen.findByLabelText("ログイン名"), { target: { value: "tom" } });
     fireEvent.change(screen.getByLabelText("パスワード"), { target: { value: "whatever1" } });
-    fireEvent.click(screen.getByRole("button", { name: "ログイン" }));
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("ログインの失敗が続いたため、しばらく待ってからやり直してください。");
-    const secs = Number(/あと (\d+) 秒/.exec(alert.textContent ?? "")?.[1]);
-    expect(secs).toBeGreaterThan(20);
-    expect(secs).toBeLessThanOrEqual(30);
+    // 時計を、読むたびに必ず 1 ミリ秒進むものにする。待つ時間を、時計を 2 回読んで計算する実装だと、
+    // サーバーの答え（30 秒）より長い「あと 31 秒」が出る。本物の時計では、たまにしか起きない。
+    const realNow = Date.now.bind(Date);
+    let ticks = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + ticks++);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "ログイン" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("ログインの失敗が続いたため、しばらく待ってからやり直してください。");
+      const secs = Number(/あと (\d+) 秒/.exec(alert.textContent ?? "")?.[1]);
+      expect(secs).toBeGreaterThan(20);
+      expect(secs).toBeLessThanOrEqual(30);
+    } finally {
+      clock.mockRestore();
+    }
     expect((screen.getByRole("button", { name: /秒後にやり直せます/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -221,26 +245,26 @@ describe("管理の画面", () => {
       expect(b.disabled).toBe(true);
       expect(b.title).toBe("自分自身には使えません");
     }
-    const tomRow = screen.getByText("tom", { selector: "td" }).closest("tr")!;
-    fireEvent.click(within(tomRow).getByRole("button", { name: "無効にする" }));
+    const tomRow = (): HTMLElement => screen.getByText("tom", { selector: "td" }).closest("tr")!;
+    await press(() => within(tomRow()).getByRole("button", { name: "無効にする" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/updateUser")).toEqual([{ name: "tom", patch: { disabled: true } }]));
     // 追加
     const form = screen.getByRole("form", { name: "利用者を追加" });
     fireEvent.change(within(form).getByLabelText("ログイン名"), { target: { value: "ann" } });
     fireEvent.change(within(form).getByLabelText(/初期パスワード/), { target: { value: "ann-pass-1234" } });
-    fireEvent.click(within(form).getByRole("button", { name: "追加" }));
+    await press(() => within(form).getByRole("button", { name: "追加" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/createUser")).toEqual([{ input: { name: "ann", password: "ann-pass-1234", admin: false } }]));
     // パスワードの再設定
-    fireEvent.click(within(tomRow).getByRole("button", { name: "パスワードを再設定" }));
+    await press(() => within(tomRow()).getByRole("button", { name: "パスワードを再設定" }));
     const pwDialog = await screen.findByRole("dialog", { name: "「tom」のパスワードを再設定" });
     fireEvent.change(within(pwDialog).getByLabelText(/新しいパスワード/), { target: { value: "new-pass-1234" } });
-    fireEvent.click(within(pwDialog).getByRole("button", { name: "再設定" }));
+    await press(() => within(pwDialog).getByRole("button", { name: "再設定" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/setPassword")).toEqual([{ name: "tom", password: "new-pass-1234" }]));
     // 削除は確認してから
-    fireEvent.click(within(tomRow).getByRole("button", { name: "削除" }));
+    await press(() => within(tomRow()).getByRole("button", { name: "削除" }));
     const del = await screen.findByRole("dialog", { name: "利用者「tom」を削除しますか？" });
     expect(bodyOf(calls, "/api/admin/deleteUser")).toEqual([]);
-    fireEvent.click(within(del).getByRole("button", { name: "削除する" }));
+    await press(() => within(del).getByRole("button", { name: "削除する" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/deleteUser")).toEqual([{ name: "tom" }]));
   });
 
@@ -260,11 +284,11 @@ describe("管理の画面", () => {
     fireEvent.click(within(picker).getByRole("checkbox", { name: /^日本語/ }));
     fireEvent.click(within(picker).getByRole("button", { name: "適用" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/setMembership").at(-1)).toEqual({ projectId: "game", user: "tom", role: "translator", languages: ["ja", "en"] }));
-    fireEvent.click(screen.getByRole("button", { name: "外す" }));
+    await press(() => screen.getByRole("button", { name: "外す" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/removeMembership")).toEqual([{ projectId: "game", user: "tom" }]));
     fireEvent.change(screen.getByRole("combobox", { name: "割り当てる利用者" }), { target: { value: "admin" } });
     fireEvent.change(screen.getByRole("combobox", { name: "割り当てる役割" }), { target: { value: "viewer" } });
-    fireEvent.click(screen.getByRole("button", { name: "割り当てる" }));
+    await press(() => screen.getByRole("button", { name: "割り当てる" }));
     await waitFor(() => expect(bodyOf(calls, "/api/admin/setMembership").at(-1)).toEqual({ projectId: "game", user: "admin", role: "viewer" }));
   });
 });

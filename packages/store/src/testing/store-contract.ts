@@ -408,30 +408,29 @@ export function defineStoreContract(name: string, harness: StoreHarness): void {
       });
     });
 
-    describe("性能", () => {
-      it("10,000 セルの set と get が数秒以内", async () => {
+    // 速さ（時間の予算）は store.perf.test.ts で、単独で走らせて確かめる（`npm run test:perf`）。
+    describe("まとまった量", () => {
+      it("10,000 セルを 1 回の set で書き、読み戻せ、版を確かめた更新もまとめてできる", async () => {
         const s = await open();
         const cells = s.cells("perf");
         const writes = Array.from({ length: 10_000 }, (_, i) => ({
           ...ref(`key_${i}`, "status", i % 2 ? "ja" : "en", `res${i % 7}`),
           value: { i, text: `値 ${i}` },
         }));
-        let t = performance.now();
-        await cells.set(writes);
-        const setMs = performance.now() - t;
-        t = performance.now();
+        const written = await cells.set(writes);
+        expect(written.every((c) => c.version === 1)).toBe(true);
         const got = await cells.get(writes);
-        const getMs = performance.now() - t;
         expect(got).toHaveLength(10_000);
+        expect(got[0]?.value).toEqual({ i: 0, text: "値 0" });
         expect(got[9999]?.value).toEqual({ i: 9999, text: "値 9999" });
         // 2 回目は全件が更新（版 2）。
-        t = performance.now();
-        const again = await cells.set(writes.map((w) => ({ ...w, expectedVersion: 1 })));
-        const updateMs = performance.now() - t;
+        const again = await cells.set(writes.map((w) => ({ ...w, value: { i: w.value.i, text: "更新" }, expectedVersion: 1 })));
+        expect(again).toHaveLength(10_000);
         expect(again.every((c) => c.version === 2)).toBe(true);
-        expect(setMs).toBeLessThan(3000);
-        expect(getMs).toBeLessThan(3000);
-        expect(updateMs).toBeLessThan(3000);
+        expect((await cells.get([writes[5000]!]))[0]?.value).toEqual({ i: 5000, text: "更新" });
+        // 版が 1 つでも合わなければ、10,000 件のどれも書かない。
+        await expect(cells.set(writes.map((w, i) => ({ ...w, value: "x", expectedVersion: i === 9999 ? 1 : 2 })))).rejects.toThrow();
+        expect((await cells.get([writes[0]!]))[0]).toMatchObject({ value: { i: 0, text: "更新" }, version: 2 });
       });
     });
   });
