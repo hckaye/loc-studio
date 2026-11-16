@@ -882,6 +882,16 @@ export function createDelimitedFormat(spec: DelimitedFormatSpec): Format {
   };
 }
 
+/**
+ * 見出しの行（空でない最初のレコード）の値を読む。プロジェクトを作る前に、すでにあるファイルの列を確かめるために使う。
+ * 文字コードの既定は "auto"（UTF-16 の BOM があればその UTF-16、なければ UTF-8）。その文字コードで読めなければ例外。
+ */
+export function readDelimitedHeader(input: Uint8Array, delimiter: string, what: string, encoding?: unknown): string[] {
+  const { text } = decodeText(input, parseEncodingOption(encoding, what), what);
+  const header = scan(text, delimiter).records.find((r) => !r.blank);
+  return header ? header.cells.map((c) => c.value) : [];
+}
+
 export const csvFormat: Format = createDelimitedFormat({ id: "builtin.csv", delimiter: ",", extensions: [".csv"] });
 
 export const tsvFormat: Format = createDelimitedFormat({ id: "builtin.tsv", delimiter: "\t", extensions: [".tsv"] });

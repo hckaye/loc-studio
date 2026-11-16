@@ -1,6 +1,7 @@
 import type { MenuItemConstructorOptions } from "electron";
 
 export interface MenuActions {
+  newProject(): void;
   openProject(): void;
   openRecent(projectPath: string): void;
   openPluginsFolder(): void;
@@ -27,6 +28,7 @@ export function buildMenuTemplate(input: MenuInput): MenuItemConstructorOptions[
   const file: MenuItemConstructorOptions = {
     label: "ファイル",
     submenu: [
+      { label: "新しいプロジェクト…", accelerator: "CommandOrControl+N", click: () => actions.newProject() },
       { label: "プロジェクトを開く…", accelerator: "CommandOrControl+O", click: () => actions.openProject() },
       { label: "最近使ったプロジェクト", submenu: recent },
       { type: "separator" },

@@ -12,7 +12,7 @@
 | 時間の予算を見るテスト | `npm run test:perf` |
 | 画面を本物のブラウザで操作して確かめる | `npm run build:web` のあと `npm run check:browser`（Chrome / Edge が要る） |
 | 画面の本番ビルドのサーバーを API で確かめる | `npm run build:web` のあと `npm run smoke:web` |
-| デスクトップ版の配布物を作って、起動して確かめる | `npm run build:web` のあと `npm run dist:desktop`、`npm run check:desktop`（画面を表示できる環境が要る） |
+| デスクトップ版の配布物を作って、リポジトリの外に写して起動して確かめる | `npm run build:web` のあと `npm run dist:desktop`、`npm run check:desktop`（画面を表示できる環境が要る） |
 | テストが退行を見つけるかの確認 | `npm run test:mutation -- scripts/mutations/<名前>.mjs`（[scripts/mutation-check.mjs](scripts/mutation-check.mjs)） |
 
 Postgres を使うテストは、環境変数 `LOC_STUDIO_TEST_PG_URL` に接続先を入れると走ります（なければ飛ばします）。Docker があれば、`docker run -d --rm -e POSTGRES_PASSWORD=<パスワード> -p 127.0.0.1::5432 postgres:16-alpine` で使い捨てのサーバーを用意できます。自分で起動したコンテナは、終わったら自分で止めます。
@@ -63,9 +63,28 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 
 プラグインの例を文書に書くときは、実在の API だけを使い、実際に動かして確かめた範囲を書きます。
 
+## 新しいプロジェクトの作成と、配布物に入る依存を変えるとき
+
+- **プロジェクトを作る処理は、1 か所に置く。** 画面の「新しいプロジェクトを作る」、デスクトップ版のメニュー、コマンドラインの `init` は、どれもサービス層の `createProject`（`packages/server/src/new-project.ts`）を呼びます。作る設定の中身を変えるときは、ここだけを変え、期待する設定を書き下したテスト（`new-project.test.ts`）を直します。雛形に入れるのは、利用者が選んだ値と、同梱の実装の選択だけです（スタジオごとに違う値を足しません。足すときは [docs/ARCHITECTURE.md の 8 章](docs/ARCHITECTURE.md#8-決め打ちにしているもの)に書きます）。
+- **作る処理は、すでにあるものを書き換えない。** すでに設定ファイルのあるフォルダには作らず、すでにあるリソースには触りません。最初のリソースは、開いたワークスペースの `createResource` で作ります（フォーマットとフックを通すため）。
+- **確認済みの記録を広げない。** `createProject` が確認済みとして記録するのは、いま自分が書いた設定ファイルの中身のハッシュだけです。雛形に基盤の項目（`INFRA_CONFIG_KEYS`）を足すときは、その値が、利用者がその場で選んだものか、同梱の実装の選択だけであることを確かめます（外部につなぐ値や、コードを動かす値を、確認なしで通る道にしません）。
+- **サービス層のパッケージに依存を足したら、配布物に入ることを確かめる。** Next の standalone は、画面のコードが import するものしか集めません。サービス層（`@loc-studio/*`）は実行時に Node が読み込むので、その依存は `npm run build:web` の最後（`apps/web/scripts/copy-static.mjs`）で standalone に足しています（`scripts/standalone-deps.cjs`）。配布物を作るとき（`after-pack.cjs`）と `npm run smoke:web` は、standalone の中だけで依存を解決できるかを確かめ、足りなければ失敗します。以前は `acorn` と `pg` が配布物に入っておらず、リポジトリの外に置いた配布物では、プロジェクトを 1 つも開けませんでした。
+- **配布物は、リポジトリの外に写して確かめる。** リポジトリの中（`apps/desktop/release/win-unpacked` など）で動かすと、足りない依存が上の階層の `node_modules` で解決されてしまい、利用者の PC でだけ起きる失敗を見逃します。`npm run check:desktop` は、配布物を一時フォルダに写して起動します。配布物を公開する前に、必ずこれを通します。
+- **デスクトップ版のメニューからの操作は、ページを読み直さずに画面へ伝える。** 殻は `webContents.send`（`loc-studio:command`）で伝え、画面は `window.locStudio.onCommand` で受けます。ページを読み直すと、画面は起動時のプロジェクトを開き直すので、選んだプロジェクトが開きません。メニューの項目を足したら、`check-package.mjs` で、配布物のメニューを実際に押して確かめます。
+
+## 設定の画面で、プロジェクト設定を編集できるようにするとき
+
+- **設定の項目は、まるごと読んで、まるごと書く。** 設定の画面の編集（`apps/web/components/ProjectConfigEditors.tsx`）は、`settings().project` の項目（`languages`、`columns` など）を手元で書き換え、`updateProjectSettings` でそのキーをまるごと置き換えます。画面に欄のない項目（プラグイン向けのオプション、選択肢の定義など）を消さないよう、書き換えるのは欄のある項目だけにし、ほかは受け取った形のまま残します。項目の並びも変えません（設定ファイルの差分を小さくするため）。保存する設定の形は、テストに書き下します（`settings-editors.test.tsx`、`config-edit.test.ts`）。
+- **選択肢は、登録されているものから作る。** 足せる列と検証は、`settings().available`（レジストリに登録された列と検証）から出します。同梱のものの ID を、画面のコードに並べません（プラグインが足した列と検証も、同じように選べるようにするため）。画面に欄のない設定は、「詳細」の JSON で書けるようにします。
+- **正しさを決めるのはサーバー。** 画面は、保存する前に分かる誤り（ID の重複など）を知らせるだけです。`updateProjectSettings` は、読み直せない設定を書かずに元に戻します。画面の確認を、サーバーの確認の代わりにしません。
+- **同梱の実装だけの欄は、そうと分かるようにする。** 「CSV / TSV の列の対応」は、同梱の CSV / TSV のオプションだけを編集します。ほかのフォーマットや、まとめて編集できない書き方では、欄を出さずに、設定ファイルで編集するよう案内します（黙って別の意味の値を書きません）。こうした欄を足したら、[docs/ARCHITECTURE.md の 8 章](docs/ARCHITECTURE.md#8-決め打ちにしているもの)に書きます。
+- **誰が変えられるかは、設定のキーで決まる。** 欄を足す前に、そのキーが `MANAGER_CONFIG_KEYS` と `ADMIN_CONFIG_KEYS` のどちらにあるかを確かめます。管理者だけのキー（基盤の項目）の欄は、`infrastructure` が true のときだけ出します（管理者でない人には、サービス層がその値を返しません）。コードの設定にあるキー（`projectFromCode`）と、権限のない人には、編集の操作を出しません。
+
 ## 絞り込みと、画面の状態を足す・変えるとき
 
 - **絞り込みの条件は、表だけに作らない。** 行の条件は `RowFilter`（`packages/server/src/api-types.ts`）に足し、`prepareFilter` と `matchEntries`（`packages/server/src/rows.ts`）に実装します。`rows` とリソースをまたぐ `query` が同じ処理を通るので、表、ツリーの件数、検索ビュー、コマンドラインの `query` に同じ条件が効きます。画面は `toRowFilter`（`apps/web/lib/client/filters.ts`）で条件を組み立てます。表にだけ効く絞り込みを足すと、ツリーの件数や書き出しと数が合わなくなります。
+- **行を選んで何かをする操作は、同じ条件（`RowFilter`）で行を選ぶ。** 「条件に合う行すべてに実行する」操作を足すときは、行を画面やコマンドラインの側で集めて名指しするのではなく、サービス層のメソッドが `RowFilter` を受け取り、`prepareFilter` と `matchEntries` で行を選びます（`runAction` の `filter` がその例です。画面の「一括アクション」とコマンドラインの `run --where` が使います）。画面に見えている行数と、実際に対象になる行がずれないよう、対象の言語（`languages`）も一緒に渡します。リソースをまたぐ操作は、`query` の結果のリソースを順に回し、リソースごとの権限の確認（`ctx.docs.get`）を通します。
+- **まとめて実行する操作は、確かめてから実行し、結果を数で返す。** 画面は、対象の行数を見せて確かめてから実行し、終わったら、合った行、反映した変更、エラーの数と内容を出します（`MatchActions.tsx`）。コマンドラインは、同じ数を出力と `--json` に入れます。ジョブになる操作を続けて始めるときは、1 つ終わるのを待ってから次を始めます（ジョブの数の上限に当たるため）。
 - **条件式（`where`）の欄や比べ方を足すとき**は、解釈（`packages/server/src/query.ts`）、画面の組み立てと補完（`apps/web/lib/client/query-text.ts` の `queryFields`、`opsFor`、`suggest`）、文書（[docs/QUERY.md](docs/QUERY.md)）を揃えます。条件式に、列の ID、言語 ID、選択肢の値を決め打ちしません（欄は設定の列から作ります）。
 - **画面の状態は、サーバー側に保存する。** 開いているリソース、絞り込み、並べ替え、列の表示、お気に入りなど、開き直したときに戻すものは `GridPrefs`（`apps/web/lib/client/prefs.ts`）に足します。`uiState` / `setUiState` で、その PC の DB に保存されます。ブラウザの localStorage だけに置かないでください。デスクトップ版は起動のたびに内部サーバーのポートが変わり、ポートごとに分かれる localStorage は、次の起動で読めません（列の幅や表示する言語は、以前は localStorage だけに置いていました）。
 - **保存してあった状態は、形が古くても読めるようにする。** 項目を足したら、その項目のない状態と、設定が変わって合わなくなった状態（なくなった列やリソース）で画面が壊れないことを確かめます。合わない絞り込みは、外して知らせます（`Studio.tsx` の `onRowsError`）。
@@ -106,7 +125,7 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 
 ## 文書
 
-- 振る舞いを変えたら、同じ変更で文書を直します。設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md)、絞り込みと条件式と検索ビューは [docs/QUERY.md](docs/QUERY.md) です。
+- 振る舞いを変えたら、同じ変更で文書を直します。使い始めの手順（新しいプロジェクトの作り方を含む）は [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)、設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md)、絞り込みと条件式と検索ビューと一括アクションは [docs/QUERY.md](docs/QUERY.md) です。
 - 文書には、確かめたことと確かめていないことを分けて書きます。動かしていない手順を、動かしたように書きません。
 - 文章は、利用者が何をすればよいか、何が起きるかを普通の文で書きます。矢印の連なり、全角ダッシュでの言い換え、決め文句は使いません。
 

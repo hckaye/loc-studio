@@ -49,6 +49,7 @@ Windows では何もしません（実行権限がない）。いちど権限が
 
 | コマンド | 内容 | サービス層 |
 | --- | --- | --- |
+| [`init`](#init) | 新しいプロジェクトを作る（設定ファイルを書く） | 作るだけ（最初のファイルを作るときは通す） |
 | [`plugins`](#plugins) | 読み込まれたプラグインと登録された実装を表示 | 通さない |
 | [`tree`](#tree) | リソースのツリーをエントリ数とフォーマットつきで表示 | 通さない |
 | [`validate`](#validate) | プロジェクトを検証 | 通さない |
@@ -69,6 +70,84 @@ Windows では何もしません（実行権限がない）。いちど権限が
 「通す」のコマンドは、画面と同じサービス層（`packages/server`）を通るので、変更履歴、生成結果のキャッシュ、未保存の変更（ドラフト）を画面のローカルモードと共有します。共有 DB（既定は `.loc-studio/meta.db`。設定 `storage` で Postgres にもできる）とその PC の DB を開くので、画面を同時に開いていても同じ DB を使います。「通さない」のコマンドは DB を作らず、ホストの DB はメモリ上のものになります。
 
 どのコマンドも、同梱プラグイン（`@loc-studio/builtin`、`@loc-studio/plugin-llm`）とプロジェクトのプラグインを読みます。コマンドラインは利用者が自分で実行するものなので、プロジェクトと個人のフォルダのプラグインも、プロジェクトのコードの設定（`loc-studio.config.*`）も、確認なしで読み込みます（`pluginTrust: "always"`）。設定ファイル（`loc-studio.project.json`）も確認なしで使うので、そこに書かれた保存先や接続先に、そのまま接続します。画面のローカルモードと違い、信頼の確認も import の条件の確認もしません。知らないプロジェクトに CLI を使うときは、先に設定ファイル、プラグインフォルダ、コードの設定の中身を確かめてください。
+
+### init
+
+新しいプロジェクトを作ります。`--project` のフォルダ（なければ作ります）に、設定ファイル `loc-studio.project.json` を書きます。画面の「新しいプロジェクトを作る」と同じ処理です。すでにプロジェクトのあるフォルダ（`loc-studio.project.json` か `loc-studio.config.*` がある）には作らず、設定ファイルも変えません。
+
+| オプション | 意味 |
+| --- | --- |
+| `--languages <a=名前,b=名前>` | 言語の ID と表示名（必須）。表示名を省くと ID が表示名になります。最初の言語を原文にして表の固定側に置き、ほかの言語はそこから翻訳する設定（`basedOn`）にします。ID に使えるのは、半角の英数字と `-` `_`（40 文字まで）です。`any` と `all` は、条件式の語なので使えません |
+| `--name <text>` | プロジェクトの名前。省略時はフォルダの名前 |
+| `--resource <path>` | 最初のファイルも作ります（`.csv` か `.tsv`）。キーの列と、言語ごとの本文の列だけがある、行のないファイルです |
+| `--key-column <見出し>` | すでにある CSV / TSV の、キーの列。省略時は先頭の列 |
+| `--text-columns <a=見出し,b=見出し>` | すでにある CSV / TSV の、言語ごとの本文の列。書かなかった言語は、言語 ID と同じ見出しの列を使います |
+| `--encoding <名前>` | すでにある CSV / TSV の文字コード（`auto` / `utf-8` / `utf-16le` / `utf-16be` / `shift_jis`）。省略時は `auto` |
+| `--no-status` / `--no-review` / `--no-validators` | 進捗の列、レビューの列、同梱の検証（空白、未翻訳）を付けません |
+
+```
+$ node apps/cli/dist/index.js init --project /tmp/my-game --name "My Game" --languages "ja=日本語,en=English,ko=한국어" --resource text/main.csv --user-data-dir /tmp/ud
+プロジェクトを作りました: /tmp/my-game
+  設定ファイル: /tmp/my-game/loc-studio.project.json
+  最初のファイル: text/main.csv
+画面で開くか、loc-studio tree --project "/tmp/my-game" で中身を確かめられます。
+$ cat /tmp/my-game/text/main.csv
+key,ja,en,ko
+$ node apps/cli/dist/index.js tree --project /tmp/my-game --user-data-dir /tmp/ud
+My Game/
+  text/
+    main.csv  0 件  [builtin.csv]
+$ node apps/cli/dist/index.js entry add TITLE --resource text/main.csv --text "ja=はじめる" --project /tmp/my-game --user-data-dir /tmp/ud
+text/main.csv: 行 TITLE を追加（1 行）
+```
+
+できる設定ファイルは次の形です（上の例。`--no-*` を付けると、`columns` や `validators` を書きません）。
+
+```json
+{
+  "name": "My Game",
+  "languages": [
+    { "id": "ja", "label": "日本語", "pinned": true },
+    { "id": "en", "label": "English", "basedOn": "ja" },
+    { "id": "ko", "label": "한국어", "basedOn": "ja" }
+  ],
+  "columns": [
+    { "use": "builtin.key", "id": "key" },
+    { "use": "builtin.text", "id": "text" },
+    { "use": "builtin.textStatus", "id": "textStatus" },
+    { "use": "builtin.reviewStatus", "id": "reviewStatus", "of": "text" }
+  ],
+  "validators": ["builtin.whitespace", "builtin.untranslated"]
+}
+```
+
+すでに CSV のあるフォルダでは、列の対応を指定します。次は、見出しが `Note,ID,JP,EN` のファイルがあるフォルダの例です。設定ファイルに `formats`（CSV と TSV の `key` と `text`）が入ります。すでにあるファイルは書き換えません。
+
+```
+$ node apps/cli/dist/index.js init --project /tmp/existing --languages "ja=日本語,en=English" --key-column ID --text-columns "ja=JP,en=EN" --user-data-dir /tmp/ud
+プロジェクトを作りました: /tmp/existing
+  設定ファイル: /tmp/existing/loc-studio.project.json
+画面で開くか、loc-studio tree --project "/tmp/existing" で中身を確かめられます。
+$ node apps/cli/dist/index.js query --project /tmp/existing --where "text@en = Yes" --user-data-dir /tmp/ud
+条件に合う行: 1 / 1 行（原文 2 文字 / 1 語）
+  Text/ui.csv: 1 / 1
+```
+
+`formats` は、画面で開くときに確認の対象になる項目です。`init` は、いま書いた中身を確認済みとしてローカル設定（`--user-data-dir` の `settings.json`。省略時は既定のローカル設定）に記録するので、同じ設定フォルダを使う画面では、開くときに確認が出ません。あとでその項目を書き換えると、確認が出ます。
+
+すでにプロジェクトのあるフォルダでは終了コード 1、入力の誤りは終了コード 2 で、どちらも何も作りません。
+
+```
+$ node apps/cli/dist/index.js init --project /tmp/my-game --languages ja
+/tmp/my-game には、すでにプロジェクトの設定ファイル（loc-studio.project.json）があります。新しく作らずに、既存のプロジェクトとして開いてください。
+$ node apps/cli/dist/index.js init --project /tmp/bad --languages "ja jp"
+言語の ID "ja jp" は使えません。半角の英数字で始め、英数字と - _ だけの 40 文字までにしてください（例: ja、en、zh-Hans）。
+$ node apps/cli/dist/index.js init --project /tmp/bad
+init には --languages が必要です（例: --languages ja=日本語,en=English。最初の言語が原文）。
+詳しくは loc-studio --help を参照してください。
+```
+
+`--json` を付けると、`{ "project", "configFile", "config", "resource"? }` を返します。
 
 ### plugins
 
@@ -329,6 +408,7 @@ back: 全体 4 / キャッシュ済み 0 / 生成 0 / 失敗 4
 | `--resources <glob>` | 対象のリソース。一致するリソースがなければ終了コード 2 |
 | `--languages <a,b>` | 対象の言語 ID（`cell` / `column` 対象は、列 × 言語のセルごとに実行。`row` 対象は、指定すると言語ごとに実行）。`cell` / `column` 対象で省略すると、アクションの `languages`、それもなければ全言語 |
 | `--keys <k1,k2>` | 対象のキー（`cell` / `row` / `selection` 対象）。省略すると全行 |
+| `--where <式>` | 条件に合う行だけを対象にする（`cell` / `row` / `selection` 対象）。式は `query` と同じ（[QUERY.md](QUERY.md#条件式の書き方)）。`--keys` とは併用できない |
 | `--column <id>` | `cell` / `column` 対象のアクションで使う列。省略するとアクションの `columns` |
 
 ```
@@ -340,10 +420,25 @@ Assets/Text/system/ui.csv text@ja: 反映 1
 
 （`mystudio.trim` は [plugins/action.md](plugins/action.md) の例です。）
 
+`--where` を付けると、条件に合う行だけに実行します。`--resources` を省くと、プロジェクトのすべてのリソースから、条件に合う行を探します（合う行のないリソースは、結果に出ません）。先に `query --where` で同じ式を試すと、対象になる行を、実行する前に確かめられます。
+
+```
+$ node apps/cli/dist/index.js run mystudio.trim --project /tmp/sample --user-data-dir /tmp/ud --user alice --column text --languages ja --where "key ~ PAD"
+Assets/Text/system/ui.csv text@ja: 条件に合う行 1 / 反映 1
+Assets/Text/chapter01.csv text@ja: 条件に合う行 1 / 反映 1
+前後の空白を削除（mystudio.trim）: リソース 2 / 条件に合う行 2 / 反映 2 / 失敗 0
+本文の変更は未保存です。save で書き込んでください。
+```
+
+- 式の中で言語を書かない欄（`text ~ 王都` のような、どれかの言語を見る書き方）は、`--languages` の言語だけを見ます。`--languages` を省くと、すべての言語です。
+- 条件に合う行が 1 つもないときは、`条件に合う行がありません。` と出して、終了コード 0 で終わります。
+- `file` / `column` 対象のアクションは、ファイルや列の全体が対象なので、`--where` は使えません（終了コード 2）。対象のファイルは `--resources` で絞ります。
+- `--where` と `--keys` を両方付けたとき、式に誤りがあるときも、終了コード 2 です（何も実行しません）。
+
 - 本文への変更は、画面と同じく未保存の変更（ドラフト）になります。リソースに書くには、`save` が要ります（ドラフトはその PC の DB に残るので、別のコマンドで `save` できます）。ステータスなどの列への変更は、すぐ共有 DB に保存されます。
 - 失敗（反映できない変更、アクションの例外）があれば終了コード 1 です。アクションが見つからない、列がない、などは終了コード 2 です（`アクション "x" は設定の actions にありません（使えるアクション: ...）`）。
 - 対象が 20 行を超える `cell` / `row` のアクションは、ジョブとして実行され、進み具合が標準エラー出力に出ます。
-- `--json` は `{ "actionId", "patched", "failed", "results": [{ "resource", "cellId"?, "message"?, "patched", "jobDone"?, "jobFailed"?, "errors" }] }` です。
+- `--json` は `{ "actionId", "matched"?, "patched", "failed", "results": [{ "resource", "cellId"?, "matched"?, "message"?, "patched", "jobDone"?, "jobFailed"?, "errors" }] }` です。`matched`（条件に合った行の数）は、`--where` を付けたときだけ入ります。
 
 ### save
 
@@ -532,4 +627,6 @@ node apps/cli/dist/index.js validate --project . --fail-on error --json > valida
 - `server check` は、Postgres のサーバーの DB（PostgreSQL 16）でも実行しました。ただし、出力に「プロジェクトを開く確認」の行が加わる前の版での実行で、いまの版ではやり直していません。
 - `entry add` / `rename` / `remove` と `resource create` の出力は、2026-11-15 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです。
 - `query` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです（`--where`、`--group-by`、`--limit`、`--columns`、`--format csv`、`--out`、`--bom`、誤った式）。集計の例は、先に `set textStatus@ko done --keys UI_OK,UI_CANCEL` を実行したあとの出力です。書き出し先のパスは、例に合わせて書き換えています。読めないリソースがある場合と、`--format tsv` は、テストで確かめただけです。
+- `init` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、リポジトリの中の一時フォルダに対して実行して得たものです（新しいフォルダ、すでに CSV のあるフォルダ、すでにプロジェクトのあるフォルダ、誤った言語 ID、`--languages` の欠落）。パスは、例に合わせて書き換えています。`--encoding`、`--no-*`、`--json` は、テストで確かめただけです。
+- `run --where` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピー（[plugins/action.md](plugins/action.md) の `mystudio.trim` を置き、前後に空白のある行を `entry add` で 2 つのリソースに足したもの）に対して実行して得たものです。条件に合う行がない場合、`--keys` との併用、誤った式、`--json` も実行しました。`file` 対象のアクションに `--where` を付けた場合は、テストで確かめただけです。
 - `save` の競合（終了コード 1）と、20 行を超えるアクションのジョブは、実行していません。説明はコードに基づきます。

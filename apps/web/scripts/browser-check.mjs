@@ -3,7 +3,7 @@
 // 使い方: npm run build:web && npm run check:browser
 //   ブラウザの場所は環境変数 LOC_STUDIO_CHROME で指定できる。見つからなければ、何も確かめずに終了コード 2 で終わる。
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -73,8 +73,27 @@ const UI_FILE = path.join(project, "Assets", "Text", "system", "ui.csv");
   // 日付の列（共有 DB に持つ、行に 1 つの列）。進捗は、原文の文字数で数える。
   config.columns.push({ id: "due", kind: "meta", scope: "entry", type: "date", source: "builtin.db", label: "期日" });
   config.grid = { progressUnit: "characters" };
+  // 行が対象のアクション（「一括アクション」の確認に使う）。韓国語のステータスを「作業中」にする。
+  config.actions = ["check.mark"];
+  writeFileSync(
+    path.join(project, "loc-studio-plugins", "check-actions.mjs"),
+    `export default {
+  name: "browser-check-actions",
+  actions: [{
+    id: "check.mark",
+    label: "作業中にする",
+    target: "row",
+    async run(ctx) {
+      return { patches: [{ resourceId: ctx.entry.resource.id, entryKey: ctx.entry.key, columnId: "textStatus", language: "ko", value: "wip" }] };
+    },
+  }],
+};
+`,
+  );
   writeFileSync(file, JSON.stringify(config, null, 2));
 }
+const CONFIG_FILE = path.join(project, "loc-studio.project.json");
+const readConfig = () => JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
 
 // ---- サーバー（本番ビルド）
 const standalone = path.join(appDir, ".next", "standalone", "apps", "web", "server.js");
@@ -212,6 +231,7 @@ function prepareWebMode() {
 }
 
 let webServer;
+let firstServer;
 let exitCode = 1;
 try {
   // サーバーが答えるまで待つ。
@@ -231,13 +251,18 @@ try {
   await evaluate(HELPERS);
 
   console.log("== 開く（設定とプラグインの信頼の確認） ==");
-  // 表が出るまで、信頼の確認のボタンを押していく。
+  // 信頼の確認のボタンを押していき、表が出て、確認を待っているものがなくなるまで待つ。
+  // （プラグインを読み込まなくても表は出るので、表が出たことだけでは、確認が済んだか分からない。）
   await until(
-    `(() => {
-      if (document.querySelector('[data-row="0"] .k-key')) return true;
+    `(async () => {
       const b = __t.button(/^(信頼して開く|信頼して読み込む)$/);
-      if (b && !b.disabled) b.click();
-      return false;
+      if (b) {
+        if (!b.disabled) b.click();
+        return false;
+      }
+      if (!document.querySelector('[data-row="0"] .k-key')) return false;
+      const info = await fetch("/api/rpc/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json());
+      return info.result?.restricted !== true && info.result?.untrustedPlugins === 0;
     })()`,
     "信頼の確認を済ませて、表が出る",
     60_000,
@@ -446,6 +471,23 @@ try {
   const csvText = csv.subarray(3).toString("utf8");
   check(csv[0] === 0xef && csv[1] === 0xbb && csv[2] === 0xbf, "CSV の先頭に BOM が付いている");
   check(csvText.startsWith("resource,key,") && csvText.split("\r\n").filter((l) => l.startsWith("Assets/Text/chapter01.csv,CH01_CHOICE_001")).length === 2, "CSV に、見出しと、条件に合う 2 行が入っている", csvText.slice(0, 300));
+  // 一括アクション: 条件に合う行すべて（プロジェクト全体）に、アクションを実行する。
+  const rpc = (method, params) =>
+    evaluate(`fetch("/api/rpc/${method}", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: ${JSON.stringify(params)} }) }).then((r) => r.json()).then((b) => b.result ?? null)`);
+  const koStatus = async (key) => (await rpc("rowDetail", { resourceId: "Assets/Text/chapter01.csv", key }))?.row?.cells?.["textStatus@ko"]?.value;
+  check((await koStatus("CH01_CHOICE_001A")) === "todo" && (await koStatus("CH01_INTRO_001")) === "todo", "（前提）アクションの前は、韓国語のステータスが「未着手」");
+  await click(`__t.button(/^一括アクション ▾$/, ${view})`, "検索ビューの一括アクション");
+  await click(`__t.all('[role="menuitem"]', ${view}).find((b) => b.textContent.trim() === "作業中にする")`, "作業中にする");
+  const bulkDialog = `__t.dialog(/^一括アクション: 作業中にする$/)`;
+  await until(`(${bulkDialog}?.textContent ?? "").includes("プロジェクト全体の、絞り込みに合う 2 行に実行します")`, "確かめる窓に、対象の行数が出る");
+  check((await koStatus("CH01_CHOICE_001A")) === "todo", "一括アクションは、確かめるまで実行しない（対象の行数を先に見せる）");
+  await click(`__t.button(/^2 行に実行$/, ${bulkDialog})`, "2 行に実行");
+  await until(`(${bulkDialog}?.querySelector('[role="status"]')?.textContent ?? "").includes("終わりました。")`, "実行が終わる");
+  const bulkResult = await evaluate(`${bulkDialog}.querySelector('[role="status"]').textContent`);
+  check(bulkResult.includes("リソース 1 / 1") && bulkResult.includes("条件に合った行 2 / 反映した変更 2 / エラー 0 件"), "終わると、条件に合った行と、反映した変更の数が出る", bulkResult);
+  await click(`__t.all("button", ${bulkDialog}).filter((b) => __t.name(b) === "閉じる").at(-1)`, "閉じる");
+  check((await koStatus("CH01_CHOICE_001A")) === "wip" && (await koStatus("CH01_CHOICE_001B")) === "wip", "条件に合う 2 行に、アクションが実行される（韓国語のステータスが「作業中」になる）");
+  check((await koStatus("CH01_INTRO_001")) === "todo", "条件に合わない行には、実行しない");
   await click(`${resultKeys.replace(".map((r) => r.children[1].textContent)", "")}[1]`, "結果の 2 行目");
   await until(`!${view} && __t.keys().join(",") === "CH01_CHOICE_001A,CH01_CHOICE_001B"`, "表に戻る");
   await until(`document.querySelector(".grid-scroll")?.getAttribute("aria-activedescendant")?.startsWith("gc-1-")`, "選んだ行が選択される");
@@ -503,11 +545,227 @@ try {
   await until(`${enumCells} > 0`, "列が戻る");
   await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
 
+  // 表のツールバーの一括アクション: 開いているリソースの、絞り込みに合う行が対象。
+  await click(`__t.button(/^一括アクション ▾$/)`, "表の一括アクション");
+  await until(`(document.querySelector('[role="menu"] .menu-note')?.textContent ?? "") === "このリソースの、絞り込みに合う 2 行に実行"`, "メニューに、対象の行数が出る");
+  check(true, "表のツールバーの一括アクションは、開いているリソースの、絞り込みに合う行を対象にする（2 行）");
+  await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+
+  console.log("== 設定の画面で、プロジェクト設定を変える（言語、列の対応、列、検証） ==");
+  {
+    const settings = `__t.dialog(/^設定$/)`;
+    const saved = async (what) => {
+      await until(`__t.toasts().includes("プロジェクト設定を保存しました")`, `${what}: 保存の通知が出る`);
+      // 通知を消して、次の保存の通知と区別できるようにする。
+      await evaluate(`__t.all('.toast [aria-label="通知を閉じる"]').forEach((b) => b.click()), true`);
+      await until(`!__t.toasts().includes("プロジェクト設定を保存しました")`, "通知が消える");
+    };
+    const original = readConfig();
+    await click(`__t.button(/^設定$/)`, "設定");
+    await until(`!!__t.labeled("ko の表示名", ${settings})`, "設定の画面に、言語の編集が出る");
+    // 言語を足す。
+    await evaluate(`__t.setValue(__t.labeled("追加する言語の ID"), "fr"), __t.setValue(__t.labeled("追加する言語の表示名"), "フランス語"), true`);
+    await click(`__t.button(/^言語を追加$/, ${settings})`, "言語を追加");
+    await click(`__t.button(/^言語を保存$/, ${settings})`, "言語を保存");
+    await saved("言語");
+    check(JSON.stringify(readConfig().languages.at(-1)) === JSON.stringify({ id: "fr", label: "フランス語", basedOn: "ja" }), "設定の画面で言語を足して保存すると、設定ファイルの languages に書かれる", readConfig().languages);
+    check(JSON.stringify(readConfig().languages.slice(0, -1)) === JSON.stringify(original.languages), "すでにある言語の設定（グループなど、画面に欄のない項目を含む）は変わらない");
+    check((await evaluate(`document.querySelectorAll('[role="dialog"]').length`)) === 1 && (await rpc("info", {}))?.restricted !== true, "基盤の項目のある設定ファイルを画面から変えても、信頼の確認は出ない（自分の変更なので）");
+    check((await rpc("info", {}))?.languages?.some((l) => l.id === "fr") === true, "足した言語が、読み直したプロジェクトに入っている");
+    // 列の対応: 足した言語の本文の列を決める。
+    const frHeader = `${settings}.querySelector("#ps-mapping-text-fr")`;
+    await until(`!!${frHeader}`, "列の対応に、足した言語の欄が出る");
+    check((await evaluate(`${settings}.querySelector("#ps-mapping-key").value + "/" + ${settings}.querySelector("#ps-mapping-text-ko").value`)) === "ID/KR", "列の対応の欄に、いまの設定（キーは ID、韓国語は KR）が入っている");
+    check((await evaluate(`__t.all("#ps-mapping-headers option").map((o) => o.value).includes("MaxLen")`)) === true, "見出しの候補に、ファイルの見出しが出る（MaxLen など）");
+    await evaluate(`__t.setValue(${frHeader}, "FR"), true`);
+    await click(`__t.button(/^列の対応を保存$/, ${settings})`, "列の対応を保存");
+    await saved("列の対応");
+    const mapped = readConfig().formats[0];
+    check(mapped.options.text.fr === "FR" && mapped.options.key === "ID" && mapped.options.text.ko === "KR" && mapped.options.columns.maxLength === "MaxLen", "列の対応を保存すると、formats のオプションに書かれ、ほかのオプションは残る", mapped);
+    check((await evaluate(`document.querySelectorAll('[role="dialog"]').length`)) === 1 && (await rpc("info", {}))?.restricted !== true, "列の対応（基盤の項目）を画面から変えても、信頼の確認は出ない");
+    // 列: 表示名を変える。
+    await evaluate(`__t.setValue(__t.labeled("列 due の表示名", ${settings}), "締め切り"), true`);
+    await click(`__t.button(/^列を保存$/, ${settings})`, "列を保存");
+    await saved("列");
+    check(readConfig().columns.find((c) => c.id === "due")?.label === "締め切り" && readConfig().columns.length === original.columns.length, "列の表示名を変えて保存すると、設定ファイルの columns に書かれる");
+    check((await rpc("info", {}))?.columns?.find((c) => c.id === "due")?.label === "締め切り", "変えた表示名が、読み直したプロジェクトに入っている");
+    // 検証: 1 つ消して、足し直す。
+    const validatorCount = original.validators.length;
+    await click(`__t.button(/^未翻訳（5 番目）を削除$/, ${settings})`, "未翻訳の検証を削除");
+    await click(`__t.button(/^検証を保存$/, ${settings})`, "検証を保存");
+    await saved("検証");
+    check(readConfig().validators.length === validatorCount - 1 && !readConfig().validators.includes("builtin.untranslated"), "検証を消して保存すると、設定ファイルの validators から消える", readConfig().validators);
+    await until(`__t.all('[aria-label="追加する検証"] option', ${settings}).some((o) => o.value === "builtin.untranslated")`, "足せる検証の一覧が出る");
+    await evaluate(`__t.select(__t.labeled("追加する検証", ${settings}), "builtin.untranslated"), true`);
+    await click(`__t.button(/^検証を追加$/, ${settings})`, "検証を追加");
+    await click(`__t.button(/^検証を保存$/, ${settings})`, "検証を保存（足し直す）");
+    await saved("検証（足し直す）");
+    check(readConfig().validators.at(-1) === "builtin.untranslated" && readConfig().validators.length === validatorCount, "登録済みの検証を選んで足すと、設定ファイルの validators に書かれる", readConfig().validators);
+    // あとの確認のために、足した言語と列の対応、列の表示名を戻す。
+    await evaluate(`__t.setValue(${frHeader}, ""), true`);
+    await click(`__t.button(/^列の対応を保存$/, ${settings})`, "列の対応を保存（戻す）");
+    await saved("列の対応（戻す）");
+    await click(`__t.button(/^fr を削除$/, ${settings})`, "fr を削除");
+    await click(`__t.button(/^言語を保存$/, ${settings})`, "言語を保存（戻す）");
+    await saved("言語（戻す）");
+    await evaluate(`__t.setValue(__t.labeled("列 due の表示名", ${settings}), "期日"), true`);
+    await click(`__t.button(/^列を保存$/, ${settings})`, "列を保存（戻す）");
+    await saved("列（戻す）");
+    const restored = readConfig();
+    check(JSON.stringify(restored.languages) === JSON.stringify(original.languages) && JSON.stringify(restored.formats) === JSON.stringify(original.formats) && JSON.stringify(restored.columns) === JSON.stringify(original.columns), "言語を消し、列の対応と表示名を戻すと、設定ファイルの languages / formats / columns が元の内容に戻る", { languages: restored.languages, formats: restored.formats });
+    await click(`__t.all("button", ${settings}).find((b) => __t.name(b) === "閉じる")`, "設定を閉じる");
+    await until(`document.querySelectorAll('[role="dialog"]').length === 0 && __t.keys().length === 2`, "設定を閉じると、表に戻る");
+    check(true, "設定を変えたあとも、表はそのまま使える（絞り込みも残る）");
+  }
+
   const errors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);
   check(errors.length === 0, "操作の途中で、失敗の通知は出ていない", errors);
 
-  console.log("== Web モード（ログインと、役割による操作の絞り込み） ==");
+  console.log("== はじめて使う（プロジェクトを指定せずに起動して、新しいプロジェクトを作る） ==");
   server.kill();
+  {
+    // プロジェクトも、前に開いた記録もない状態（配布物を初めて起動したときと同じ）で起動する。
+    const fport = await freePort();
+    const fbase = `http://127.0.0.1:${fport}`;
+    const fenv = { ...process.env, NODE_ENV: "production", PORT: String(fport), LOC_STUDIO_MODE: "local", LOC_STUDIO_LOCAL_TOKEN: TOKEN, LOC_STUDIO_USER_DATA_DIR: path.join(tmp, "first-user") };
+    delete fenv.LOC_STUDIO_PROJECT;
+    firstServer = spawn(process.execPath, [launcher], { env: fenv, stdio: ["ignore", "pipe", "pipe"] });
+    firstServer.stdout.on("data", (d) => (serverLog += d));
+    firstServer.stderr.on("data", (d) => (serverLog += d));
+    for (let i = 0; ; i++) {
+      try {
+        await fetch(fbase);
+        break;
+      } catch {
+        if (i > 100) throw new Error(`2 つ目のサーバーが起動しませんでした:\n${serverLog.slice(-500)}`);
+        await sleep(300);
+      }
+    }
+    await send("Page.navigate", { url: `${fbase}/?token=${TOKEN}` }, sessionId);
+    await until("document.readyState === 'complete' && !!document.querySelector('.open-card')", "最初の画面");
+    await evaluate(HELPERS);
+    const newButton = `__t.button(/^新しいプロジェクトを作る…$/)`;
+    await until(`!!${newButton} && !${newButton}.disabled`, "「新しいプロジェクトを作る…」が押せる");
+    check(true, "プロジェクトを指定せずに起動すると、最初の画面に「新しいプロジェクトを作る…」が出る");
+    const pathField = `document.querySelector("#new-project-path")`;
+    const status = `document.querySelector(".new-project-status")?.textContent ?? ""`;
+    const noDialog = `document.querySelectorAll('[role="dialog"]').length === 0`;
+    const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
+
+    // ---- 何もないところから作る
+    const fresh = path.join(tmp, "fresh-game");
+    await click(newButton, "新しいプロジェクトを作る…");
+    await until(`!!${pathField}`, "作成の画面");
+    await evaluate(`__t.setValue(${pathField}, ${JSON.stringify(fresh)}), true`);
+    await until(`(${status}).includes("このフォルダはまだありません")`, "フォルダがまだないことを伝える");
+    check((await evaluate(`document.querySelector("#new-project-name").value`)) === "fresh-game", "プロジェクトの名前を、フォルダの名前で埋める");
+    check(!existsSync(fresh), "確かめるだけでは、フォルダを作らない");
+    await click(`__t.button(/^プロジェクトを作る$/)`, "プロジェクトを作る");
+    const freshRow = `__t.all(".tree-row.resource").find((b) => /main\\.csv/.test(b.textContent))`;
+    await until(`!!(${freshRow})`, "作ったプロジェクトが開き、ツリーに最初のファイルが出る", 60_000);
+    check((await evaluate(noDialog)) === true, "作ったプロジェクトは、信頼の確認なしで開く");
+    check((await evaluate(`document.querySelector(".project-name").textContent`)) === "fresh-game", "上のバーに、プロジェクトの名前が出る");
+    const freshConfig = readJson(path.join(fresh, "loc-studio.project.json"));
+    check(
+      JSON.stringify(freshConfig) ===
+        JSON.stringify({
+          name: "fresh-game",
+          languages: [
+            { id: "ja", label: "日本語", pinned: true },
+            { id: "en", label: "English", basedOn: "ja" },
+          ],
+          columns: [
+            { use: "builtin.key", id: "key" },
+            { use: "builtin.text", id: "text" },
+            { use: "builtin.textStatus", id: "textStatus" },
+            { use: "builtin.reviewStatus", id: "reviewStatus", of: "text" },
+          ],
+          validators: ["builtin.whitespace", "builtin.untranslated"],
+        }),
+      "設定ファイルに、選んだ言語と、同梱の列と検証が書かれる",
+      freshConfig,
+    );
+    const mainFile = path.join(fresh, "text", "main.csv");
+    check(readFileSync(mainFile, "utf8") === "key,ja,en\n", "最初のファイルは、キーと言語の列だけの、行のないファイル", readFileSync(mainFile, "utf8"));
+    await until(`(document.querySelector(".grid-empty")?.textContent ?? "").includes("まだ行がありません")`, "行の足し方の案内が出る");
+    check(true, "行のないファイルでは、行の足し方を案内する");
+    // そのまま行を足して、本文を書いて保存できる。
+    await click(`__t.button(/^行 ▾$/)`, "行のメニュー");
+    await click(`__t.all('[role="menuitem"]').find((b) => /行を追加/.test(b.textContent))`, "行を追加…");
+    await until(`!!__t.all('[role="dialog"] input')[0]`, "行を追加のダイアログ");
+    await evaluate(`__t.setValue(__t.all('[role="dialog"] input')[0], "TITLE"), true`);
+    await click(`__t.button(/^追加する$/)`, "追加する");
+    await until(`__t.keys()[0] === "TITLE"`, "足した行が表に出る");
+    await evaluate(`__t.all('[data-row="0"] .k-text')[0].dispatchEvent(new MouseEvent("dblclick", { bubbles: true })), true`);
+    await until(`!!document.querySelector("#edit-textarea")`, "編集モーダルが開く");
+    await evaluate(`__t.setValue(document.querySelector("#edit-textarea"), "はじめる"), true`);
+    await click(`__t.button(/^確定 /)`, "確定");
+    await until(`!document.querySelector("#edit-textarea")`, "編集モーダルが閉じる");
+    await click(`__t.button(/^すべて保存/)`, "すべて保存");
+    {
+      const deadline = Date.now() + 20_000;
+      while (readFileSync(mainFile, "utf8") !== "key,ja,en\nTITLE,はじめる,\n") {
+        if (Date.now() > deadline) throw new Error(`待っても起きませんでした: 本文がファイルに書かれる（${JSON.stringify(readFileSync(mainFile, "utf8"))}）`);
+        await sleep(100);
+      }
+    }
+    check(true, "作ったプロジェクトで、行を足し、本文を書いて、ファイルに保存できる");
+
+    // ---- すでに CSV のあるフォルダから作る（開こうとして、作る案内から進む）
+    const existing = path.join(tmp, "existing-game");
+    mkdirSync(path.join(existing, "Text"), { recursive: true });
+    const existingCsv = "Note,ID,JP,EN\nmemo,OK,はい,Yes\n";
+    writeFileSync(path.join(existing, "Text", "ui.csv"), existingCsv);
+    await click(`__t.button(/^別のプロジェクト$/)`, "別のプロジェクト");
+    await until(`!!document.querySelector("#project-path")`, "最初の画面に戻る");
+    check((await evaluate(`__t.all(".recent-btn").map((b) => b.textContent.trim())`)).includes(fresh), "作ったプロジェクトが、最近のプロジェクトに出る");
+    await evaluate(`__t.setValue(document.querySelector("#project-path"), ${JSON.stringify(existing)}), true`);
+    await click(`__t.button(/^開く$/)`, "開く");
+    const offer = `__t.button(/^このフォルダに新しいプロジェクトを作る…$/)`;
+    await until(`!!${offer}`, "プロジェクトでないフォルダを開こうとすると、作る案内が出る");
+    check((await evaluate(`document.querySelector('[role="alert"]').textContent`)).includes("プロジェクトの設定ファイル"), "開けなかった理由（設定ファイルがない）も出る");
+    await click(offer, "このフォルダに新しいプロジェクトを作る…");
+    await until(`${pathField}?.value === ${JSON.stringify(existing)}`, "作成の画面に、そのフォルダが入っている");
+    await until(`(${status}).includes("CSV / TSV が 1 個あります")`, "すでにあるファイルを見つける");
+    const jaSelect = `__t.all("select").find((x) => x.id.startsWith("new-project-text-") && document.querySelector('label[for="' + x.id + '"]').textContent.startsWith("日本語"))`;
+    const enSelect = `__t.all("select").find((x) => x.id.startsWith("new-project-text-") && document.querySelector('label[for="' + x.id + '"]').textContent.startsWith("English"))`;
+    await until(`!!${jaSelect}`, "本文の列の選択が出る");
+    check((await evaluate(`[...document.querySelector("#new-project-key").options].map((o) => o.value).join(",")`)) === "Note,ID,JP,EN", "ファイルの見出しが、キーの列の候補に出る");
+    check((await evaluate(`${enSelect}.value`)) === "EN", "言語の ID と同じ見出しは、最初から選ばれている");
+    await evaluate(`(__t.select(document.querySelector("#new-project-key"), "ID"), __t.select(${jaSelect}, "JP"), true)`);
+    await click(`__t.button(/^プロジェクトを作る$/)`, "プロジェクトを作る");
+    await until(`__t.keys()[0] === "OK"`, "すでにあるファイルの行が出る", 60_000);
+    check((await evaluate(noDialog)) === true, "列を対応させたプロジェクトも、信頼の確認なしで開く");
+    const texts = await evaluate(`__t.all('[data-row="0"] .k-text').map((c) => c.textContent.trim())`);
+    check(texts.length === 2 && texts[0].includes("はい") && texts[1].includes("Yes"), "選んだ列の本文が、言語ごとに出る", texts);
+    const formats = readJson(path.join(existing, "loc-studio.project.json")).formats;
+    check(
+      JSON.stringify(formats) ===
+        JSON.stringify([
+          { use: "builtin.csv", match: "**/*.csv", options: { key: "ID", text: { ja: "JP", en: "EN" } } },
+          { use: "builtin.tsv", match: "**/*.tsv", options: { key: "ID", text: { ja: "JP", en: "EN" } } },
+        ]),
+      "設定ファイルに、選んだ列の対応が書かれる",
+      formats,
+    );
+    check(readFileSync(path.join(existing, "Text", "ui.csv"), "utf8") === existingCsv, "すでにあるファイルは、作成では変えない");
+
+    // ---- すでにプロジェクトのあるフォルダには作れない
+    await click(`__t.button(/^別のプロジェクト$/)`, "別のプロジェクト");
+    await click(newButton, "新しいプロジェクトを作る…");
+    await until(`!!${pathField}`, "作成の画面");
+    await evaluate(`__t.setValue(${pathField}, ${JSON.stringify(fresh)}), true`);
+    await until(`(${status}).includes("すでにプロジェクトがあります")`, "すでにプロジェクトがあることを伝える");
+    check((await evaluate(`__t.button(/^プロジェクトを作る$/).disabled`)) === true, "すでにプロジェクトのあるフォルダには作れない");
+    await click(`__t.button(/^このプロジェクトを開く$/)`, "このプロジェクトを開く");
+    await until(`__t.keys()[0] === "TITLE"`, "そのプロジェクトが開く", 60_000);
+    check(true, "「このプロジェクトを開く」で、既存のプロジェクトとして開ける");
+    const firstErrors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);
+    check(firstErrors.length === 0, "操作の途中で、失敗の通知は出ていない", firstErrors);
+    firstServer.kill();
+  }
+
+  console.log("== Web モード（ログインと、役割による操作の絞り込み） ==");
   const web = prepareWebMode();
   const wport = await freePort();
   const wbase = `http://127.0.0.1:${wport}`;
@@ -571,6 +829,7 @@ try {
   socket.close();
   if (browser.exitCode === null) browser.kill();
   server.kill();
+  firstServer?.kill();
   webServer?.kill();
   // 止めたブラウザとサーバーがファイルを離すまで、消すのを繰り返す（Windows では、少し遅れて離す）。
   try {

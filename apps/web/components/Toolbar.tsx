@@ -26,6 +26,8 @@ export interface ToolbarProps {
   /** target: "file" のアクション（このリソースが対象）。 */
   fileActions: ActionInfo[];
   onFileAction(a: ActionInfo): void;
+  /** 絞り込みに合う行すべてにアクションを実行する操作（「一括アクション」）。 */
+  matchActions?: React.ReactNode;
   onReload(): void;
   onDiscardAll(): void;
   /** 行の追加・キーの変更・削除を始める（対象の行は呼び出し側が選択から決める）。 */
@@ -314,6 +316,7 @@ export function Toolbar(props: ToolbarProps) {
       {toggle("onlyUnsaved", "未保存", "未保存の本文がある行")}
       <span className="tb-grow" />
       {props.onStructure && <RowsMenu onChoose={props.onStructure} disabledReason={props.structureDisabledReason} />}
+      {props.matchActions}
       {props.fileActions.length > 0 && <ActionsMenu actions={props.fileActions} onRun={props.onFileAction} disabledReason={props.runDisabledReason} />}
       <button type="button" className="btn small" onClick={props.onReload} title="リソースを読み直す（外部で書き換えたとき）">
         再読み込み

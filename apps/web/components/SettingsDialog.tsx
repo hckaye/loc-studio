@@ -4,10 +4,12 @@ import type { SettingInfo, WorkspaceApi } from "@loc-studio/server";
 import { Dialog } from "@/components/Dialog";
 import { useStudio, useToasts } from "@/components/context";
 import { canManage } from "@/lib/client/permissions";
+import { ColumnsEditor, LanguagesEditor, MappingEditor, ValidatorsEditor } from "@/components/ProjectConfigEditors";
 
 /*
  * 設定。プロジェクト設定（チームで共有。loc-studio.project.json に書く）とローカル設定（この PC だけ）をタブで分ける。
  * コードの設定（loc-studio.config.ts）にある項目は読み取り専用、プロジェクト設定で固定された項目はローカル設定で変えられない。
+ * 言語、列、検証、CSV / TSV の列の対応は、ここで編集できる（ProjectConfigEditors）。
  */
 
 type SettingsData = Awaited<ReturnType<WorkspaceApi["settings"]>>;
@@ -103,10 +105,12 @@ function ProjectSettings({
   onSaved(info: Awaited<ReturnType<WorkspaceApi["info"]>>): void;
   infrastructure: boolean;
 }) {
-  const { api, info } = useStudio();
+  const { api, info, mode } = useStudio();
   const { push, reportError } = useToasts();
   const p = data.project;
   const manage = canManage(info);
+  // 設定で選べる登録済みの列と検証。制限された状態などで返ってこないときは、選択肢なし。
+  const available = data.available ?? { columns: [], validators: [] };
   // コードの設定にある項目と、管理者でない人には変えられない
   const fromCode = (k: string) => data.projectFromCode.includes(k) || !manage.ok;
   const [name, setName] = useState(p.name ?? "");
@@ -146,29 +150,17 @@ function ProjectSettings({
         )}
       </div>
       <h3 className="section-title">言語{fromCode("languages") && <CodeMark />}</h3>
-      <table className="table small">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>表示名</th>
-            <th>基にする言語</th>
-            <th>グループ</th>
-            <th>編集</th>
-          </tr>
-        </thead>
-        <tbody>
-          {info.languages.map((l) => (
-            <tr key={l.id}>
-              <td className="mono">{l.id}</td>
-              <td>{l.label}</td>
-              <td>{l.basedOn ?? "（原文）"}</td>
-              <td>{l.group ?? ""}</td>
-              <td>{l.editable === false ? "読取専用" : "可"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="muted small">言語の追加や変更は設定ファイルで行います（ここでは一覧だけ表示します）。</p>
+      <LanguagesEditor key={`languages-${JSON.stringify(p.languages)}`} languages={p.languages ?? []} locked={fromCode("languages")} busy={busy} onSave={(languages) => void save({ languages })} />
+      <h3 className="section-title">列{fromCode("columns") && <CodeMark />}</h3>
+      <ColumnsEditor
+        key={`columns-${JSON.stringify(p.columns)}`}
+        columns={p.columns}
+        resolved={info.columns}
+        available={available.columns}
+        locked={fromCode("columns")}
+        busy={busy}
+        onSave={(columns) => void save({ columns })}
+      />
       {infrastructure ? (
         <>
           <h3 className="section-title">共有 DB の場所{fromCode("storage") && <CodeMark />}</h3>
@@ -210,17 +202,27 @@ function ProjectSettings({
           <p className="muted small">保存先、プラグインフォルダ、外部の接続先の設定は、サーバーの管理者だけが見たり変えたりできます。</p>
         </>
       )}
-      <h3 className="section-title">使っているバリデータ{fromCode("validators") && <CodeMark />}</h3>
-      <ul className="plain-list small">
-        {info.validators.map((v, i) => (
-          <li key={`${v.id}-${i}`}>
-            {v.label} <span className="muted mono">{v.id}</span>
-          </li>
-        ))}
-        {info.validators.length === 0 && <li className="muted">なし</li>}
-      </ul>
+      <h3 className="section-title">検証{fromCode("validators") && <CodeMark />}</h3>
+      <ValidatorsEditor
+        key={`validators-${JSON.stringify(p.validators)}`}
+        validators={p.validators}
+        available={available.validators}
+        locked={fromCode("validators")}
+        busy={busy}
+        onSave={(validators) => void save({ validators })}
+      />
       {infrastructure && (
         <>
+          <h3 className="section-title">CSV / TSV の列の対応{fromCode("formats") && <CodeMark />}</h3>
+          <MappingEditor
+            key={`formats-${JSON.stringify([p.formats, p.languages])}`}
+            formats={p.formats}
+            languages={p.languages ?? []}
+            {...(mode === "local" && info.root ? { inspectRoot: info.root } : {})}
+            locked={fromCode("formats")}
+            busy={busy}
+            onSave={(formats) => void save({ formats })}
+          />
           <h3 className="section-title">プラグインフォルダ{fromCode("pluginDirs") && <CodeMark />}</h3>
           <div className="setting-row column">
             <label htmlFor="ps-plugindirs">プロジェクトからの相対パス（1 行に 1 つ。空なら既定の loc-studio-plugins）</label>

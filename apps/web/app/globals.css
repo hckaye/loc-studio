@@ -1804,6 +1804,65 @@ textarea.input {
   flex-direction: column;
   gap: 6px;
 }
+.open-start {
+  align-items: center;
+  gap: 12px;
+}
+.open-start .btn {
+  flex: none;
+}
+.open-offer {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+/* 新しいプロジェクトを作る */
+.open-card.new-project {
+  width: min(760px, 100%);
+}
+.open-project:has(.new-project) {
+  align-items: flex-start;
+}
+.new-project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.new-project-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.new-project-section p {
+  margin: 0;
+}
+.new-project-status {
+  min-height: 20px;
+}
+.new-project-languages {
+  width: 100%;
+}
+.new-project-languages td:first-child,
+.new-project-languages th:first-child {
+  width: 48px;
+  text-align: center;
+}
+.new-project-languages .input {
+  width: 100%;
+}
+.new-project-map {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.new-project-actions {
+  margin-top: 8px;
+}
+
 .recent-list {
   list-style: none;
   margin: 0;
@@ -2431,4 +2490,40 @@ input[type="checkbox"]:disabled {
 }
 .search-table td.sev-warning {
   box-shadow: inset 2px 0 0 var(--warn);
+}
+
+/* 設定の画面の、プロジェクト設定の編集（言語、列、検証、列の対応） */
+.config-table {
+  width: 100%;
+  margin-bottom: 6px;
+}
+.config-table .input {
+  width: 100%;
+  min-width: 90px;
+}
+.config-table input[type="checkbox"] {
+  width: auto;
+}
+.config-row-buttons {
+  white-space: nowrap;
+}
+.config-row-buttons > .btn {
+  margin-right: 4px;
+}
+.config-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.config-detail > textarea {
+  width: 100%;
+}
+/* 一括アクションのメニューの、対象の説明 */
+.menu-note {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+  white-space: nowrap;
 }

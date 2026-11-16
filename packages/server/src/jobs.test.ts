@@ -213,6 +213,66 @@ describe("runAction", () => {
     expect((await ws.tree()).find((n) => n.unsaved)?.unsaved).toBe(30);
   });
 
+  it("filter: 条件に合う行だけに、行ごとに実行する（合わない行は変えない）", async () => {
+    const r = await ws.runAction({ actionId: "fake.upper", resourceId: UI, cellId: "text@JaEnglish", filter: { languages: ["JaEnglish"], where: "key ~ GOLD or text@JaEnglish = OK" } });
+    expect(r).toEqual({ patched: 2, matched: 2, message: "UI_OK を変えました\nUI_GOLD を変えました" });
+    const rows = await ws.rows({ resourceId: UI, languages: ["JaEnglish"], offset: 0, limit: 10 });
+    expect(rows.rows.map((x) => x.cells["text@JaEnglish"]!.value)).toEqual(["OK", "Cancel", "Save your progress?", "GOLD: {GOLD} G"]);
+  });
+
+  it("filter: 表の絞り込みと同じ条件（search、filters）が使え、selection には合う行だけを渡す", async () => {
+    const s = await ws.runAction({ actionId: "fake.count", resourceId: UI, filter: { languages: ["JaEnglish"], search: "save" } });
+    expect(s).toEqual({ patched: 0, matched: 1, message: "1 行", open: { url: "https://example.com/" } });
+    await ws.setCell({ resourceId: UI, key: "UI_GOLD", cellId: "textStatus@ko", value: "done" });
+    const m = await ws.runAction({ actionId: "fake.mark", resourceId: UI, filter: { languages: ["ko"], filters: [{ cellId: "textStatus@ko", values: ["todo"] }] } });
+    // 合う 3 行のうち、when が false の UI_CANCEL は飛ばす。done にした UI_GOLD は条件に合わない。
+    expect(m).toEqual({ patched: 2, matched: 3 });
+    const status = async (key: string) => (await ws.rowDetail({ resourceId: UI, key })).row.cells["textStatus@ko"]!.value;
+    expect([await status("UI_OK"), await status("UI_CANCEL"), await status("UI_SAVE_CONFIRM"), await status("UI_GOLD")]).toEqual(["wip", "todo", "wip", "done"]);
+  });
+
+  it("filter: 合う行がなければ、アクションを呼ばずに matched: 0 を返す", async () => {
+    const s = await ws.runAction({ actionId: "fake.count", resourceId: UI, filter: { languages: ["JaEnglish"], where: "key = NOPE" } });
+    expect(s).toEqual({ patched: 0, matched: 0 });
+    const c = await ws.runAction({ actionId: "fake.upper", resourceId: UI, cellId: "text@JaEnglish", filter: { languages: ["JaEnglish"], where: "key = NOPE" } });
+    expect(c).toEqual({ patched: 0, matched: 0 });
+    expect((await ws.tree()).some((n) => n.unsaved)).toBe(false);
+  });
+
+  it("filter: 合う行が 20 行を超えるとジョブにする（合わない行は変えない）", async () => {
+    const lines = ["ID,JP,EN,CN,KR,MaxLen", ...Array.from({ length: 30 }, (_, i) => `K${i},本文${i},${i < 25 ? "go" : "stay"}${i},,,`)];
+    await tp.write("Assets/Text/big.csv", lines.join("\n") + "\n");
+    const r = await ws.runAction({ actionId: "fake.upper", resourceId: "Assets/Text/big.csv", cellId: "text@JaEnglish", filter: { languages: ["JaEnglish"], where: "text@JaEnglish ~ go" } });
+    expect(r).toMatchObject({ patched: 0, matched: 25 });
+    const job = await ws.waitForJob(r.jobId!);
+    expect(job).toMatchObject({ kind: "action", status: "done", done: 25, total: 25 });
+    const rows = await ws.rows({ resourceId: "Assets/Text/big.csv", languages: ["JaEnglish"], offset: 0, limit: 30 });
+    expect(rows.rows.filter((x) => x.cells["text@JaEnglish"]!.draft).map((x) => x.key)).toEqual(Array.from({ length: 25 }, (_, i) => `K${i}`));
+    expect(rows.rows[29]!.cells["text@JaEnglish"]!.value).toBe("stay29");
+  });
+
+  it("filter の誤り: keys との併用、ファイル全体が対象のアクション、条件式の誤りは invalid で、何も変えない", async () => {
+    await expect(ws.runAction({ actionId: "fake.mark", resourceId: UI, keys: ["UI_OK"], filter: { languages: ["ko"] } })).rejects.toMatchObject({
+      code: "invalid",
+      message: expect.stringContaining("keys と filter は、どちらか一方だけ"),
+    });
+    await expect(ws.runAction({ actionId: "fake.file", resourceId: UI, filter: { languages: ["ko"] } })).rejects.toMatchObject({
+      code: "invalid",
+      message: expect.stringContaining("filter（条件に合う行）は指定できません"),
+    });
+    await expect(ws.runAction({ actionId: "fake.mark", resourceId: UI, filter: { languages: ["ko"], where: "nope = 1" } })).rejects.toMatchObject({ code: "invalid" });
+    await expect(ws.runAction({ actionId: "fake.mark", resourceId: UI, filter: { languages: ["zz"] } })).rejects.toMatchObject({
+      code: "invalid",
+      message: expect.stringContaining('言語 "zz" はプロジェクトにありません'),
+    });
+    await expect(ws.runAction({ actionId: "fake.mark", resourceId: UI, filter: {} as never })).rejects.toMatchObject({ code: "invalid" });
+    await expect(ws.runAction({ actionId: "fake.mark", resourceId: UI, filter: null as never })).rejects.toMatchObject({
+      code: "invalid",
+      message: "filter はオブジェクトで指定してください。",
+    });
+    expect((await ws.rowDetail({ resourceId: UI, key: "UI_OK" })).row.cells["textStatus@ko"]!.value).toBe("todo");
+  });
+
   it("引数の誤り", async () => {
     await expect(ws.runAction({ actionId: "nope", resourceId: UI })).rejects.toMatchObject({ code: "not-found" });
     await expect(ws.runAction({ actionId: "fake.upper", resourceId: UI, keys: ["UI_OK"] })).rejects.toMatchObject({ code: "invalid" });

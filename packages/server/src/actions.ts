@@ -1,5 +1,6 @@
 /**
  * アクションの実行。cell / row は行ごとに、selection / file / column は 1 回だけ呼ぶ。
+ * 対象の行は、keys（名指し）か filter（条件に合う行。表の絞り込みと同じ RowFilter）で決める。
  * 返ってきた変更点は setText / setCell と同じ規則で反映する（cause: action）。
  */
 import type { Action, ActionContext, ActionResult, ColumnDef, EntryData, LanguageDef, Options } from "@loc-studio/sdk";
@@ -12,6 +13,7 @@ import { errorText } from "./context.js";
 import type { DocState } from "./documents.js";
 import { applyPatches } from "./editing.js";
 import { assertCanRun } from "./permissions.js";
+import { matchEntries, prepareFilter, requireLanguages } from "./rows.js";
 
 /** これを超える行数はジョブにする。 */
 export const ACTION_JOB_THRESHOLD = 20;
@@ -57,9 +59,24 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
   const keys = params.keys ? [...new Set(params.keys)] : undefined;
   const why = { cause: "action" as const, causeRef: action.id };
 
+  // filter: 条件に合う行を対象にする（表の絞り込み、検索ビュー、コマンドラインの run --where）。
+  let matched: EntryData[] | undefined;
+  if (params.filter !== undefined) {
+    if (typeof params.filter !== "object" || params.filter === null) throw new ApiError("invalid", "filter はオブジェクトで指定してください。");
+    if (keys) throw new ApiError("invalid", "keys と filter は、どちらか一方だけを指定してください。");
+    if (action.target !== "cell" && action.target !== "row" && action.target !== "selection") {
+      throw new ApiError("invalid", `アクション "${action.id}"（target: ${action.target}）は、ファイルや列の全体が対象なので、filter（条件に合う行）は指定できません。`);
+    }
+    matched = await matchEntries(ctx, doc, prepareFilter(ctx, params.filter, requireLanguages(ctx, params.filter.languages)));
+    // 合う行がなければ、アクションを呼ばない。
+    if (matched.length === 0) return { patched: 0, matched: 0 };
+  }
+
   if (action.target === "cell" || action.target === "row") {
-    if (!keys || keys.length === 0) throw new ApiError("invalid", `アクション "${action.id}"（target: ${action.target}）には keys が必要です。`);
-    const rows = keys.map((k) => ctx.entryOf(doc, k));
+    if (!matched && (!keys || keys.length === 0)) {
+      throw new ApiError("invalid", `アクション "${action.id}"（target: ${action.target}）には keys か filter が必要です。`);
+    }
+    const rows = matched ?? keys!.map((k) => ctx.entryOf(doc, k));
     if (rows.length > ACTION_JOB_THRESHOLD) {
       const job = ctx.jobs.start("action", `${action.label}（${rows.length} 行）`, rows.length, async (handle) => {
         const values = await preload(ctx, doc, rows);
@@ -83,10 +100,11 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
         }
         if (errors.length > 0) handle.info.error = errors.slice(0, 5).join(" / ");
       });
-      return { patched: 0, jobId: job.id };
+      return { patched: 0, jobId: job.id, ...(matched ? { matched: rows.length } : {}) };
     }
     const values = await preload(ctx, doc, rows);
     const out: RunActionResult = { patched: 0 };
+    if (matched) out.matched = rows.length;
     const messages: string[] = [];
     const errors: string[] = [];
     for (const data of rows) {
@@ -109,7 +127,7 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
   }
 
   // selection / file / column は 1 回だけ。行の値は rows（entries と同じ順）から読める。
-  const entries = action.target === "selection" && keys ? keys.map((k) => ctx.entryOf(doc, k)) : doc.entries;
+  const entries = matched ?? (action.target === "selection" && keys ? keys.map((k) => ctx.entryOf(doc, k)) : doc.entries);
   const values = await preload(ctx, doc, entries);
   const actx: ActionContext = {
     entries: entries.map((e) => ctx.toEntry(doc, e)),
@@ -130,6 +148,7 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
   }
   const applied = await applyPatches(ctx, r?.patches ?? [], why);
   const out: RunActionResult = { patched: applied.patched };
+  if (matched) out.matched = matched.length;
   if (r?.message) out.message = r.message;
   if (r?.open) out.open = r.open;
   if (applied.errors.length > 0) out.errors = applied.errors;

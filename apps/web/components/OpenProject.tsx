@@ -1,18 +1,27 @@
 "use client";
 import { useEffect, useState } from "react";
 
-/* プロジェクトを開く画面: パスの入力、最近のプロジェクト、（デスクトップ版なら）フォルダの選択。 */
+/*
+ * 最初の画面（ローカルモード）: 新しいプロジェクトを作る、既存のプロジェクトを開く（パスの入力、デスクトップ版ならフォルダの選択）、
+ * 最近のプロジェクト。
+ */
 export function OpenProject({
   recent,
   loading,
   error,
   onOpen,
+  onCreate,
+  createOffer,
   initialPath = "",
 }: {
   recent: string[];
   loading: boolean;
   error: string | null;
   onOpen(path: string): void;
+  /** 新しいプロジェクトを作る画面へ進む。path は、フォルダの欄に入れておく値。 */
+  onCreate(path?: string): void;
+  /** 開こうとしたフォルダに、まだプロジェクトがなかった（そのフォルダに作ることを勧める）。 */
+  createOffer?: string | null;
   /** URL の ?project= から入れておく値（開くのは利用者が「開く」を押したときだけ）。 */
   initialPath?: string;
 }) {
@@ -37,7 +46,17 @@ export function OpenProject({
           </span>{" "}
           loc-studio
         </h1>
-        <h2 className="section-title">プロジェクトを開く</h2>
+        <p className="muted">
+          ゲームの翻訳テキスト（CSV など）を、言語を並べた表で編集、検証、レビューするツールです。データはこの PC のフォルダに置き、プロジェクトのフォルダごとに設定を持ちます。
+        </p>
+        <h2 className="section-title">はじめて使う</h2>
+        <div className="row open-start">
+          <button type="button" className="btn primary" onClick={() => onCreate()} disabled={loading}>
+            新しいプロジェクトを作る…
+          </button>
+          <span className="muted small">翻訳テキストのあるフォルダ（またはこれから作るフォルダ）を選び、言語を決めるだけで始められます。</span>
+        </div>
+        <h2 className="section-title">既存のプロジェクトを開く</h2>
         <form
           className="open-form"
           onSubmit={(e) => {
@@ -55,7 +74,7 @@ export function OpenProject({
                 フォルダを選ぶ…
               </button>
             )}
-            <button type="submit" className="btn primary" disabled={loading || path.trim() === ""}>
+            <button type="submit" className="btn" disabled={loading || path.trim() === ""}>
               開く
             </button>
           </div>
@@ -64,6 +83,14 @@ export function OpenProject({
         {error && (
           <p className="hint-error" role="alert">
             {error}
+          </p>
+        )}
+        {createOffer && (
+          <p className="open-offer">
+            このフォルダには、まだプロジェクトがありません。{" "}
+            <button type="button" className="btn small primary" onClick={() => onCreate(createOffer)} disabled={loading}>
+              このフォルダに新しいプロジェクトを作る…
+            </button>
           </p>
         )}
         {recent.length > 0 && (

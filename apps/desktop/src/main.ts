@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type IpcMainInvokeEve
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { parseProjectArg, userArgs } from "./args.js";
-import { IPC_OPEN_PATH, IPC_PICK_FOLDER } from "./ipc.js";
+import { IPC_COMMAND, IPC_OPEN_PATH, IPC_PICK_FOLDER, IPC_PROJECTS_CHANGED } from "./ipc.js";
 import { buildMenuTemplate } from "./menu.js";
 import { resolveAppDir, resolveServerEntry, resolveWatchdog } from "./paths.js";
 import { readRecentProjects } from "./recent.js";
@@ -59,6 +59,7 @@ function rebuildMenu(): void {
     appName: app.getName(),
     recentProjects: recentProjects(),
     actions: {
+      newProject: () => sendCommand({ type: "new" }),
       openProject: () => void pickAndOpenProject(),
       openRecent: (p) => openProjectInWindow(p),
       openPluginsFolder: () => void openFolder(pluginsDir(), true),
@@ -92,9 +93,17 @@ async function pickAndOpenProject(): Promise<void> {
   if (picked) openProjectInWindow(picked);
 }
 
-function openProjectInWindow(projectPath: string): void {
+/**
+ * 画面に操作を伝える（メニュー、2 つ目の起動）。ページは読み直さない。
+ * 読み直すと、画面は起動時のプロジェクトを開き直してしまい、選んだプロジェクトが開かない。
+ */
+function sendCommand(command: { type: "open"; path: string } | { type: "new" }): void {
   if (!server || !mainWindow) return;
-  void mainWindow.loadURL(buildProjectUrl(server.url, projectPath));
+  mainWindow.webContents.send(IPC_COMMAND, command);
+}
+
+function openProjectInWindow(projectPath: string): void {
+  sendCommand({ type: "open", path: projectPath });
 }
 
 /** レンダラーからの IPC は、ローカルサーバーのページからだけ受け付ける。 */
@@ -107,6 +116,11 @@ function registerIpc(): void {
   ipcMain.handle(IPC_PICK_FOLDER, async (event) => {
     assertTrustedSender(event);
     return pickFolder(BrowserWindow.fromWebContents(event.sender) ?? undefined);
+  });
+  // プロジェクトを開いた・作ったあと: 最近の一覧が変わったので、メニューを作り直す。
+  ipcMain.on(IPC_PROJECTS_CHANGED, (event) => {
+    const url = event.senderFrame?.url ?? "";
+    if (server && isLocalUrl(url, server.url)) rebuildMenu();
   });
   ipcMain.handle(IPC_OPEN_PATH, async (event, target: unknown) => {
     assertTrustedSender(event);
@@ -147,7 +161,7 @@ function createWindow(baseUrl: string): BrowserWindow {
   win.webContents.on("will-redirect", guardNavigation);
   // <webview> は使わない。付けようとしたものは拒否する
   win.webContents.on("will-attach-webview", (event) => event.preventDefault());
-  // プロジェクトを開くと URL が変わる（replaceState）ので、最近の一覧を更新する
+  // ページを読み込んだら、最近の一覧をメニューに入れ直す（開いた・作ったときは、画面が IPC で知らせる）
   win.webContents.on("did-navigate-in-page", () => rebuildMenu());
   win.webContents.on("did-finish-load", () => rebuildMenu());
   win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));

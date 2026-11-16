@@ -2,12 +2,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QueryResponse, QueryRow, RowFilter } from "@loc-studio/server";
 import { useStudio, useToasts } from "@/components/context";
+import { MatchActions } from "@/components/MatchActions";
 import { columnLabel, displayValue, findOption, optionLabel, worstSeverity, type GridColumn } from "@/lib/client/model";
 import { queryFields } from "@/lib/client/query-text";
 
 /*
  * 検索ビュー: いまの絞り込みに合う行を、プロジェクトのすべてのリソースから集めて 1 つの表で見る。
  * 件数と原文の量、欄の値ごとの集計を出し、結果と集計を CSV / TSV に書き出せる。行を選ぶと、そのリソースのその行へ移る。
+ * 「一括アクション」で、条件に合う行すべて（プロジェクト全体）にアクションを実行できる。
  */
 
 export const SEARCH_PAGE_SIZE = 200;
@@ -26,6 +28,10 @@ export interface SearchViewProps {
   refreshToken: number;
   /** 行へ移る。index は、そのリソースの中で条件に合う行のうち何番目か。 */
   onJump(target: { resourceId: string; key: string; index: number }): void;
+  /** 一括アクションで値が変わったあと（表やツリーを読み直す）。 */
+  onChanged?(): void;
+  /** 一括アクションがジョブを始めたとき。 */
+  onJob?(jobId: string): void;
   onClose(): void;
 }
 
@@ -43,7 +49,7 @@ function download(name: string, text: string, type: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function SearchView({ filter, languages, columns, groupBy, onGroupBy, refreshToken, onJump, onClose }: SearchViewProps) {
+export function SearchView({ filter, languages, columns, groupBy, onGroupBy, refreshToken, onJump, onChanged, onJob, onClose }: SearchViewProps) {
   const { api, info } = useStudio();
   const { push, reportError } = useToasts();
   const [result, setResult] = useState<QueryResponse | null>(null);
@@ -132,7 +138,8 @@ export function SearchView({ filter, languages, columns, groupBy, onGroupBy, ref
 
   const matched = result?.matched;
   const filtering = Object.keys(filter).length > 0;
-  const withMatches = result ? result.resources.filter((r) => r.matched > 0).length : 0;
+  const matchTargets = useMemo(() => (result ? result.resources.filter((r) => r.matched > 0).map((r) => ({ resourceId: r.resourceId, path: r.path })) : []), [result]);
+  const withMatches = matchTargets.length;
 
   return (
     <div className="search-view" role="region" aria-label="検索ビュー">
@@ -251,6 +258,7 @@ export function SearchView({ filter, languages, columns, groupBy, onGroupBy, ref
           <button type="button" className="btn small" disabled={!matched || matched.rows === 0} onClick={() => void exportTable("rows", "copy")}>
             結果をコピー
           </button>
+          <MatchActions filter={filter} languages={languages} targets={matchTargets} rows={matched?.rows ?? 0} scope="プロジェクト全体" onDone={() => onChanged?.()} {...(onJob ? { onJob } : {})} />
           <span className="muted small">行を押すと、そのリソースのその行へ移ります。</span>
         </div>
         <div className="search-table-wrap">

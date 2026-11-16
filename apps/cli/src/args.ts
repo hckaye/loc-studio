@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 
-export const COMMANDS = ["plugins", "tree", "validate", "whoami", "generate", "run", "status", "query", "save", "set", "entry", "resource", "user", "member", "server", "help"] as const;
+export const COMMANDS = ["init", "plugins", "tree", "validate", "whoami", "generate", "run", "status", "query", "save", "set", "entry", "resource", "user", "member", "server", "help"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export type FailOn = "error" | "warning" | "info" | "never";
@@ -58,6 +58,20 @@ export interface CliOptions {
   bom: boolean;
   /** query: 表示する行の数。 */
   limit?: number;
+  /** init: プロジェクトの名前。 */
+  name?: string;
+  /** init: 言語（ID と表示名）。最初の言語が原文。 */
+  newLanguages?: { id: string; label?: string }[];
+  /** init: すでにある CSV / TSV の、キーの列の見出し。 */
+  keyColumn?: string;
+  /** init: すでにある CSV / TSV の、言語ごとの本文の列の見出し。 */
+  textColumns?: Record<string, string>;
+  /** init: すでにある CSV / TSV の文字コード。 */
+  encoding?: string;
+  /** init: 進捗の列、レビューの列、同梱の検証を付けない。 */
+  noStatus: boolean;
+  noReview: boolean;
+  noValidators: boolean;
 }
 
 /** 使い方の誤り。終了コード 2 で、メッセージだけを表示する。 */
@@ -66,6 +80,7 @@ export class UsageError extends Error {}
 /** コマンドごとに使えるオプション。ほかのコマンドのオプションは誤りとして知らせる。 */
 /** コマンドごとの位置引数の数（コマンド名を除く）。 */
 const COMMAND_ARITY: Record<Command, { count: number; names: string }> = {
+  init: { count: 0, names: "" },
   plugins: { count: 0, names: "" },
   tree: { count: 0, names: "" },
   validate: { count: 0, names: "" },
@@ -121,12 +136,13 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   "member set": [...ADMIN_COMMON, "role", "languages"],
   "member remove": ADMIN_COMMON,
   "server check": ADMIN_COMMON,
+  init: ["name", "languages", "resource", "key-column", "text-columns", "encoding", "no-status", "no-review", "no-validators"],
   plugins: [],
   tree: [],
   validate: ["languages", "resources", "fail-on", "max-issues"],
   whoami: ["user"],
   generate: ["languages", "resources", "dry-run", "user"],
-  run: ["languages", "resources", "keys", "column", "user"],
+  run: ["languages", "resources", "keys", "where", "column", "user"],
   status: ["languages", "resources", "user"],
   query: ["languages", "resources", "where", "group-by", "columns", "format", "out", "bom", "limit", "user"],
   save: ["user"],
@@ -181,6 +197,13 @@ export function parseCliArgs(argv: string[]): CliOptions {
         out: { type: "string" },
         bom: { type: "boolean" },
         limit: { type: "string" },
+        name: { type: "string" },
+        "key-column": { type: "string" },
+        "text-columns": { type: "string" },
+        encoding: { type: "string" },
+        "no-status": { type: "boolean" },
+        "no-review": { type: "boolean" },
+        "no-validators": { type: "boolean" },
       },
     });
   } catch (err) {
@@ -255,6 +278,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
     generate: values.generate === true,
     yes: values.yes === true,
     bom: values.bom === true,
+    noStatus: values["no-status"] === true,
+    noReview: values["no-review"] === true,
+    noValidators: values["no-validators"] === true,
   };
   const list = (value: string): string[] => value.split(",").map((s) => s.trim()).filter((s) => s !== "");
   if (values.where !== undefined) options.where = values.where;
@@ -305,6 +331,30 @@ export function parseCliArgs(argv: string[]): CliOptions {
   if (values.languages !== undefined) {
     options.languages = values.languages.split(",").map((s) => s.trim()).filter((s) => s !== "");
   }
+  if (command === "init") {
+    // init の --languages は <ID>=<表示名> を並べる（表示名は省ける）。最初の "=" で分ける。
+    const pairs = (value: string, what: string): [string, string | undefined][] =>
+      list(value).map((item) => {
+        const at = item.indexOf("=");
+        if (at === 0) throw new UsageError(`${what} は <言語 ID>=<値> の形で指定してください: ${item}`);
+        return at < 0 ? [item, undefined] : [item.slice(0, at).trim(), item.slice(at + 1).trim()];
+      });
+    if (values.languages === undefined || list(values.languages).length === 0) {
+      throw new UsageError("init には --languages が必要です（例: --languages ja=日本語,en=English。最初の言語が原文）。");
+    }
+    options.newLanguages = pairs(values.languages, "--languages").map(([id, label]) => (label !== undefined && label !== "" ? { id, label } : { id }));
+    delete options.languages;
+    if (values.name !== undefined) options.name = values.name;
+    if (values["key-column"] !== undefined) options.keyColumn = values["key-column"];
+    if (values["text-columns"] !== undefined) {
+      options.textColumns = {};
+      for (const [id, header] of pairs(values["text-columns"], "--text-columns")) {
+        if (header === undefined || header === "") throw new UsageError(`--text-columns は <言語 ID>=<見出し> の形で指定してください: ${id}`);
+        options.textColumns[id] = header;
+      }
+    }
+    if (values.encoding !== undefined) options.encoding = values.encoding;
+  }
   if (values.resources !== undefined) options.resources = values.resources;
   if (values.user !== undefined) options.user = values.user;
   return options;
@@ -342,6 +392,7 @@ export const USAGE = `loc-studio — ゲーム向けローカライゼーショ�
   loc-studio <コマンド> [オプション]
 
 コマンド:
+  init       新しいプロジェクトを作る（設定ファイル loc-studio.project.json を書く）
   plugins    読み込まれたプラグインと、登録された実装、探したフォルダを表示する
   tree       リソースのツリーを、エントリ数とフォーマットつきで表示する
   validate   プロジェクトを検証する（問題があれば終了コード 1）
@@ -366,6 +417,15 @@ export const USAGE = `loc-studio — ゲーム向けローカライゼーショ�
   --json                  機械可読の JSON で出力する
   --help                  この説明を表示する
 
+init のオプション（--project のフォルダに作る。フォルダがなければ作る。すでにプロジェクトのあるフォルダには作らない）:
+  --languages <a=名前,b=名前>  言語の ID と表示名（必須。表示名は省ける。最初の言語を原文にして、ほかの言語をそこから翻訳する）
+  --name <text>           プロジェクトの名前（既定: フォルダの名前）
+  --resource <path>       最初のファイルも作る（例: text/main.csv。キーと言語ごとの列だけの、行のないファイル）
+  --key-column <見出し>   すでにある CSV / TSV の、キーの列（既定: 先頭の列）
+  --text-columns <a=見出し,b=見出し>  すでにある CSV / TSV の、言語ごとの本文の列（既定: 言語 ID と同じ見出しの列）
+  --encoding <名前>       すでにある CSV / TSV の文字コード（auto | utf-8 | utf-16le | utf-16be | shift_jis。既定: auto）
+  --no-status / --no-review / --no-validators   進捗の列、レビューの列、同梱の検証（空白、未翻訳）を付けない
+
 validate のオプション:
   --languages <a,b>       検証する言語 ID（カンマ区切り）
   --resources <glob>      検証するリソースのパス（** * ? が使える。例: "**/ui.csv"）
@@ -384,6 +444,7 @@ run のオプション:
   --resources <glob>      対象のリソース
   --languages <a,b>       対象の言語 ID（cell / column 対象は列 × 言語のセルごとに実行）
   --keys <k1,k2>          対象のキー（cell / row / selection 対象。省略時は全行）
+  --where <式>            条件に合う行だけを対象にする（cell / row / selection 対象。式は query と同じ。--keys とは併用できない）
   --column <id>           cell / column 対象のアクションで使う列（省略時はアクションの columns）
 
 query のオプション:

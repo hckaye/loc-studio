@@ -1,6 +1,6 @@
 {
   "name": "@loc-studio/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "loc-studio デスクトップ版（Electron の殻）",
   "author": "loc-studio",

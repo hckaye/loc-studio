@@ -5,6 +5,7 @@ import { createApi, getJson, postJson, type RpcError } from "@/lib/client/api";
 import { ToastArea, ToastProvider, useToasts } from "@/components/context";
 import { Studio, type WebSession } from "@/components/Studio";
 import { OpenProject } from "@/components/OpenProject";
+import { NewProject } from "@/components/NewProject";
 import { LoginScreen } from "@/components/web/LoginScreen";
 import { ProjectList, type ProjectSummary } from "@/components/web/ProjectList";
 import { AdminScreen } from "@/components/web/AdminScreen";
@@ -13,7 +14,8 @@ import type { ClientApi } from "@/lib/client/api";
 
 /*
  * 起動。
- * - ローカルモード: 既定のプロジェクト（または ?project=）があれば開き、なければ「プロジェクトを開く」画面。
+ * - ローカルモード: 起動した人が決めた既定のプロジェクトがあれば開き、なければ最初の画面
+ *   （新しいプロジェクトを作る / 既存のプロジェクトを開く）。
  * - Web モード: ログイン → 開けるプロジェクトの一覧 → プロジェクト。認証が切れたら（401）ログインの画面に戻る。
  */
 
@@ -23,9 +25,17 @@ declare global {
     locStudio?: {
       pickFolder?: () => Promise<string | undefined | null>;
       openPath?: (path: string, line?: number) => Promise<void> | void;
+      /** メニューなど、殻からの操作を受け取る（1 つだけ登録できる。null で外す）。 */
+      onCommand?: (handler: ((command: DesktopCommand) => void) | null) => void;
+      /** 最近のプロジェクトの一覧が変わった（殻がメニューを作り直す）。 */
+      projectsChanged?: () => void;
+      platform?: string;
     };
   }
 }
+
+/** デスクトップ版の殻（メニュー、2 つ目の起動）からの操作。 */
+export type DesktopCommand = { type: "open"; path: string } | { type: "new" };
 
 interface SessionInfo {
   mode?: "local" | "web";
@@ -64,6 +74,10 @@ function AppInner() {
   const [info, setInfo] = useState<ProjectInfo | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  // 新しいプロジェクトを作る画面（path は、フォルダの欄に入れておく値）
+  const [creating, setCreating] = useState<{ path: string } | null>(null);
+  // 開こうとしたフォルダに、まだプロジェクトがなかった（そのフォルダに作ることを勧める）
+  const [createOffer, setCreateOffer] = useState<string | null>(null);
   // Web モード
   const [me, setMe] = useState<Me | null>(null);
   const [needLogin, setNeedLogin] = useState(false);
@@ -116,6 +130,7 @@ function AppInner() {
   const openLocal = useCallback(async (path: string) => {
     setOpening(true);
     setOpenError(null);
+    setCreateOffer(null);
     try {
       const res = (await postJson("/api/session/open", { project: path }, { onUnauthorized: onLocalUnauthorized })) as { project: string; recentProjects: string[] };
       const i = await createApi({ project: res.project }).info();
@@ -124,14 +139,28 @@ function AppInner() {
       setRestricted(i.restricted === true);
       setTrustContinued(false);
       setLiveProject(null);
+      setCreating(null);
       setProject(res.project);
       document.title = `${i.name} - loc-studio`;
+      window.locStudio?.projectsChanged?.();
     } catch (err) {
+      // 別のプロジェクトを開いている途中（メニューから開こうとした）なら、いまの画面は残して、開けなかったことだけを知らせる。
+      if (projectRef.current) {
+        reportError(err, "プロジェクトを開けませんでした");
+        return;
+      }
       setOpenError(err instanceof Error ? err.message : String(err));
+      // 設定ファイルのないフォルダ（まだプロジェクトでない）なら、そこに作ることを勧める。
+      try {
+        const folder = (await postJson("/api/session/inspect", { path }, { onUnauthorized: onLocalUnauthorized })) as { root: string; exists: boolean; configFile?: string };
+        if (folder.configFile === undefined) setCreateOffer(folder.root);
+      } catch {
+        // 確かめられなければ、勧めないだけ（開けなかった理由はもう出している）。
+      }
     } finally {
       setOpening(false);
     }
-  }, [onLocalUnauthorized]);
+  }, [onLocalUnauthorized, reportError]);
 
   const openWeb = useCallback(
     async (id: string) => {
@@ -189,6 +218,29 @@ function AppInner() {
       })
       .catch((err: unknown) => reportError(err, "起動情報を読めませんでした"));
   }, [openLocal, loadMe, reportError]);
+
+  // デスクトップ版: メニュー（新しいプロジェクト、プロジェクトを開く、最近使ったプロジェクト）と、2 つ目の起動からの操作。
+  // ページを読み直さずに受け取る（読み直すと、起動時のプロジェクトに戻ってしまう）。
+  useEffect(() => {
+    const bridge = typeof window !== "undefined" ? window.locStudio : undefined;
+    if (!bridge?.onCommand || web) return;
+    bridge.onCommand((command) => {
+      if (command.type === "open") {
+        setCreating(null);
+        void openLocal(command.path);
+      } else if (command.type === "new") {
+        setProject(null);
+        setInfo(null);
+        setRestricted(false);
+        setLiveProject(null);
+        setOpenError(null);
+        setCreateOffer(null);
+        setCreating({ path: "" });
+        document.title = "loc-studio";
+      }
+    });
+    return () => bridge.onCommand?.(null);
+  }, [openLocal, web]);
 
   const logout = useCallback(async () => {
     try {
@@ -280,6 +332,7 @@ function AppInner() {
     setRestricted(false);
     setLiveProject(null);
     setUrlProject(null);
+    document.title = "loc-studio";
   };
   if (project && api && info && (!restricted || liveProject === project)) {
     return (
@@ -329,13 +382,37 @@ function AppInner() {
       />
     );
   }
+  if (creating && session !== null) {
+    return (
+      <NewProject
+        initialPath={creating.path}
+        onCancel={() => setCreating(null)}
+        onUnauthorized={onLocalUnauthorized}
+        onOpenExisting={(p) => {
+          setCreating(null);
+          void openLocal(p);
+        }}
+        onCreated={(created) => {
+          setSession((s) => (s ? { ...s, recentProjects: created.recentProjects } : s));
+          for (const w of created.warnings) reportError(new Error(w), "新しいプロジェクト");
+          void openLocal(created.project);
+        }}
+      />
+    );
+  }
   return (
     <OpenProject
       recent={session?.recentProjects ?? []}
       loading={session === null || opening}
       error={openError}
+      createOffer={createOffer}
       initialPath={typeof window !== "undefined" ? (new URL(window.location.href).searchParams.get("project") ?? "") : ""}
       onOpen={(p) => void openLocal(p)}
+      onCreate={(p) => {
+        setOpenError(null);
+        setCreateOffer(null);
+        setCreating({ path: p ?? "" });
+      }}
     />
   );
 }

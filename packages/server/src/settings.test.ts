@@ -15,6 +15,24 @@ afterEach(async () => {
   await tp.cleanup();
 });
 
+// 期待する一覧は書き下す（同梱の列と検証、サンプルのプラグインの検証）。
+const AVAILABLE_COLUMNS = [
+  { id: "builtin.key", kind: "key", scope: "entry" },
+  { id: "builtin.text", kind: "text", scope: "language" },
+  { id: "builtin.textStatus", kind: "meta", label: "テキスト", scope: "language" },
+  { id: "builtin.reviewStatus", kind: "review", label: "レビュー", scope: "language" },
+  { id: "builtin.length", kind: "computed", label: "文字数", scope: "language" },
+];
+const AVAILABLE_VALIDATORS = [
+  { id: "builtin.placeholders", label: "変数・タグの過不足" },
+  { id: "builtin.tagBalance", label: "タグの対応" },
+  { id: "builtin.maxLength", label: "文字数の上限" },
+  { id: "builtin.whitespace", label: "空白" },
+  { id: "builtin.untranslated", label: "未翻訳" },
+  { id: "mystudio.lineWidth", label: "1 行の幅と行数" },
+  { id: "mystudio.forbiddenChars", label: "使えない文字" },
+];
+
 describe("settings / setLocalSetting", () => {
   it("層ごとの値と固定を返す", async () => {
     const s = await ws.settings();
@@ -27,6 +45,12 @@ describe("settings / setLocalSetting", () => {
     expect(byKey["ui.theme"]).toEqual({ key: "ui.theme", value: "light", source: "defaults", locked: false });
     expect(byKey["plugins.local.formats"]).toMatchObject({ value: "deny", source: "enforce", locked: true });
     expect(byKey["review.forwardOnPost"]).toMatchObject({ value: "ask", source: "app" });
+  });
+
+  it("設定の画面で選べる、登録済みの列と検証を返す（設定で使っていないものも含む）", async () => {
+    const { available } = await ws.settings();
+    expect(available.columns).toEqual(AVAILABLE_COLUMNS);
+    expect(available.validators).toEqual(AVAILABLE_VALIDATORS);
   });
 
   it("固定された項目は locked", async () => {

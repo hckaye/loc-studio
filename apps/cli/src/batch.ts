@@ -212,6 +212,14 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
     );
   }
   if (action.target === "review") throw new ApiError("invalid", `アクション "${actionId}" はレビュー先です。run では使えません。`);
+  if (opts.where !== undefined) {
+    if (opts.keys) throw new UsageError("--where と --keys は、どちらか一方だけを指定してください。");
+    if (action.target === "file" || action.target === "column") {
+      throw new UsageError(`アクション "${actionId}"（target: ${action.target}）は、ファイルや列の全体が対象なので、--where は使えません。対象のファイルは --resources で絞ってください。`);
+    }
+  }
+  // --where: 条件に合う行だけを対象にする（条件の「対象の言語」は --languages。省略時はすべての言語）。行を選ぶのはサービス層。
+  const filter = opts.where !== undefined ? { where: opts.where, languages: opts.languages ?? info.languages.map((l) => l.id) } : undefined;
   const resources = await selectResources(ws, opts.resources);
   if (opts.resources !== undefined && resources.length === 0) {
     throw new ApiError("not-found", `--resources "${opts.resources}" に一致するリソースがありません。`);
@@ -237,6 +245,7 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
   const results: {
     resource: string;
     cellId?: string;
+    matched?: number;
     message?: string;
     patched: number;
     jobDone?: number;
@@ -247,7 +256,9 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
 
   for (const res of resources) {
     let keys: string[] | undefined;
-    if (action.target === "cell" || action.target === "row" || action.target === "selection") {
+    if (filter) {
+      // 行はサービス層が条件で選ぶ。
+    } else if (action.target === "cell" || action.target === "row" || action.target === "selection") {
       if (opts.keys) {
         const existing = new Set(await allKeys(ws, res.id));
         keys = opts.keys.filter((k) => existing.has(k));
@@ -269,10 +280,14 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
               actionId,
               resourceId: res.id,
               ...(keys ? { keys } : {}),
+              ...(filter ? { filter } : {}),
               ...(cellId !== undefined ? { cellId } : {}),
               ...(language !== undefined ? { language } : {}),
             }),
           );
+          // 条件に合う行のないリソースは、結果に出さない。
+          if (filter && r.matched === 0) continue;
+          if (r.matched !== undefined) entry.matched = r.matched;
           entry.patched = r.patched;
           if (r.message) entry.message = r.message;
           if (r.errors) entry.errors.push(...r.errors);
@@ -295,16 +310,21 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
   }
 
   const patched = results.reduce((n, r) => n + r.patched, 0);
+  // 条件に合った行の数（リソースごとの数の合計。セルや言語ごとに呼んだ分は、1 回分だけ数える）。
+  const matchedByResource = new Map<string, number>();
+  for (const r of results) if (r.matched !== undefined) matchedByResource.set(r.resource, r.matched);
+  const matched = [...matchedByResource.values()].reduce((n, m) => n + m, 0);
   if (opts.json) {
-    json(io, { actionId, patched, failed, results });
+    json(io, { actionId, ...(filter ? { matched } : {}), patched, failed, results });
   } else {
+    if (filter && results.length === 0) io.stdout("条件に合う行がありません。\n");
     for (const r of results) {
       const head = `${r.resource}${r.cellId ? ` ${r.cellId}` : ""}`;
-      io.stdout(`${head}: 反映 ${r.patched}${r.jobDone !== undefined ? ` / ジョブ 完了 ${r.jobDone} 失敗 ${r.jobFailed ?? 0}` : ""}\n`);
+      io.stdout(`${head}: ${r.matched !== undefined ? `条件に合う行 ${r.matched} / ` : ""}反映 ${r.patched}${r.jobDone !== undefined ? ` / ジョブ 完了 ${r.jobDone} 失敗 ${r.jobFailed ?? 0}` : ""}\n`);
       if (r.message) for (const line of r.message.split("\n")) io.stdout(`  ${line}\n`);
       for (const e of r.errors) io.stderr(`  エラー: ${e}\n`);
     }
-    io.stdout(`${action.label}（${actionId}）: リソース ${new Set(results.map((r) => r.resource)).size} / 反映 ${patched} / 失敗 ${failed}\n`);
+    io.stdout(`${action.label}（${actionId}）: リソース ${new Set(results.map((r) => r.resource)).size}${filter ? ` / 条件に合う行 ${matched}` : ""} / 反映 ${patched} / 失敗 ${failed}\n`);
     if (patched > 0) io.stdout("本文の変更は未保存です。save で書き込んでください。\n");
   }
   return failed > 0 ? 1 : 0;

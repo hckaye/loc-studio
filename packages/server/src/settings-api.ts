@@ -65,6 +65,10 @@ export function settings(ctx: WsContext) {
     project: ctx.project.config,
     projectFromCode: [...ctx.project.configFromCode],
     projectFile: path.join(ctx.project.root, PROJECT_CONFIG_JSON),
+    available: {
+      columns: ctx.project.registry.list("column").map(({ value: c }) => ({ id: c.id, ...(c.label !== undefined ? { label: c.label } : {}), kind: c.kind, scope: c.scope })),
+      validators: ctx.project.registry.list("validator").map(({ value: v }) => ({ id: v.id, label: v.label })),
+    },
   };
 }
 

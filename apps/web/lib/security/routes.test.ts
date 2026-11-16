@@ -4,6 +4,8 @@ import { resetSecuritySettingsCache } from "./server-settings";
 import { POST as rpcPost } from "@/app/api/rpc/[method]/route";
 import { GET as rendererGet } from "@/app/api/renderer/[id]/route";
 import { GET as sessionGet } from "@/app/api/session/route";
+import { POST as createPost } from "@/app/api/session/create/route";
+import { POST as inspectPost } from "@/app/api/session/inspect/route";
 
 /* ルートの入口（本文を読む前の確かめ）。ローカルモード。 */
 
@@ -65,6 +67,35 @@ describe("ルートの入口", () => {
 
   it("GET /api/session も合言葉が必要", async () => {
     expect((await sessionGet(req("http://localhost:3000/api/session"))).status).toBe(401);
+  });
+
+  it("プロジェクトの作成とフォルダの確認も、合言葉と同じオリジンが必要（本文を読む前に断り、サービス層に触らない）", async () => {
+    const g = globalThis as unknown as Record<symbol, { runtime?: unknown } | undefined>;
+    const before = g[Symbol.for("loc-studio.web.runtime")]?.runtime;
+    const body = JSON.stringify({ root: "/should/not/be/created", name: "X", languages: [{ id: "ja" }], path: "/should/not/be/read" });
+    const json = { "content-type": "application/json" };
+    for (const [name, post] of [
+      ["create", createPost],
+      ["inspect", inspectPost],
+    ] as const) {
+      const url = `http://localhost:3000/api/session/${name}`;
+      expect((await post(req(url, { method: "POST", headers: json, body }))).status, `${name}: 合言葉なし`).toBe(401);
+      expect((await post(req(url, { method: "POST", headers: { ...json, cookie: COOKIE, origin: "http://evil.example" }, body }))).status, `${name}: ほかのオリジン`).toBe(403);
+      expect((await post(req(url, { method: "POST", headers: { ...json, cookie: COOKIE, "sec-fetch-site": "cross-site" }, body }))).status, `${name}: ほかのサイト`).toBe(403);
+      expect((await post(req(url, { method: "POST", headers: { cookie: COOKIE, "content-type": "text/plain" }, body }))).status, `${name}: JSON 以外`).toBe(415);
+    }
+    expect(g[Symbol.for("loc-studio.web.runtime")]?.runtime).toBe(before);
+  });
+
+  it("Web モードでは、ログインしていなければ 401（プロジェクトの作成とフォルダの確認）", async () => {
+    vi.stubEnv("LOC_STUDIO_MODE", "web");
+    resetSecuritySettingsCache();
+    const init = { method: "POST", headers: { "content-type": "application/json" }, body: "{}" };
+    // サーバーの設定がない状態では、認証の確かめの時点で断る（401 か、設定の誤りの 500）。どちらでも、作成には進まない。
+    const created = await createPost(req("http://localhost:3000/api/session/create", init));
+    const inspected = await inspectPost(req("http://localhost:3000/api/session/inspect", init));
+    expect([401, 500]).toContain(created.status);
+    expect([401, 500]).toContain(inspected.status);
   });
 
   it("RPC: 知らないメソッドは 404、JSON 以外は 415、大きすぎる本文は 413（どれもワークスペースに触らない）", async () => {

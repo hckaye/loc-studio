@@ -19,6 +19,7 @@ import type { CliOptions } from "./args.js";
 import { existsSync } from "node:fs";
 import { runAdminCommand } from "./admin.js";
 import { OpenFailure, apiErrorCode, runBatchCommand } from "./batch.js";
+import { runInit } from "./init.js";
 
 export interface CliIO {
   stdout: (s: string) => void;
@@ -347,6 +348,16 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
   if (opts.command === "help") {
     io.stdout(USAGE);
     return 0;
+  }
+  if (opts.command === "init") {
+    try {
+      return await runInit(opts, io);
+    } catch (err) {
+      io.stderr(`${errText(err)}\n`);
+      if (io.env["LOC_STUDIO_DEBUG"] && err instanceof Error && err.stack) io.stderr(`${err.stack}\n`);
+      if (err instanceof UsageError) return 2;
+      return apiErrorCode(err) ?? 1;
+    }
   }
   if (["user", "member", "server"].includes(opts.command)) {
     try {

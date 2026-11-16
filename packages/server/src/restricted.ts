@@ -119,6 +119,7 @@ export async function openRestricted(
         project: await rawJson(),
         projectFromCode: [],
         projectFile: jsonFile,
+        available: { columns: [], validators: [] },
       };
     },
     async trustPlugins(params: { items: { path: string; hash: string }[] }) {

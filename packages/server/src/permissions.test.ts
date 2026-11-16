@@ -254,6 +254,23 @@ describe("設定の roles で決めた役割", () => {
     expect(resultOf(await dispatch(ws, "runAction", { actionId: "perm.mark", resourceId: UI, keys: ["UI_OK"] }, manager))).toMatchObject({ patched: 2 });
   });
 
+  it("runAction の filter（条件に合う行）でも、役割の絞り込み（actions、resources）は同じに効く", async () => {
+    const status = async (resourceId: string, key: string) =>
+      resultOf<{ row: { cells: Record<string, { value: unknown }> } }>(await dispatch(ws, "rowDetail", { resourceId, key }, manager)).row.cells["textStatus@ko"]!.value;
+    // 実行できないアクションは、条件で行を選んでも forbidden。
+    expect(await dispatch(ws, "runAction", { actionId: "perm.mark", resourceId: UI, filter: { languages: ["ko"] } }, vendor)).toMatchObject({
+      error: { code: "forbidden", message: expect.stringContaining("perm.mark") },
+    });
+    expect(await status(UI, "UI_OK")).toBe("todo");
+    // アクションを実行できる役割でも、見えないリソースは「ない」。見えるリソースでは、条件に合う行だけに実行する。
+    await tp.patchConfig({ roles: { ...ROLES, vendor: { ...ROLES.vendor, actions: ["perm.mark"] } } });
+    await ws.reloadPlugins();
+    expect(codeOf(await dispatch(ws, "runAction", { actionId: "perm.mark", resourceId: CHAPTER, filter: { languages: ["ko"] } }, vendor))).toBe("not-found");
+    expect(await status(CHAPTER, "CH01_INTRO_001")).toBe("todo");
+    expect(resultOf(await dispatch(ws, "runAction", { actionId: "perm.mark", resourceId: UI, filter: { languages: ["ko"], where: "key = UI_OK" } }, vendor))).toEqual({ patched: 2, matched: 1 });
+    expect([await status(UI, "UI_OK"), await status(UI, "UI_CANCEL")]).toEqual(["wip", "todo"]);
+  });
+
   it("resources: 見えないリソースは、どの読み出しでも「ない」ものとして扱う", async () => {
     await dispatch(ws, "setCell", { resourceId: CHAPTER, key: "CH01_INTRO_001", cellId: "textStatus@ko", value: "wip" }, manager);
     expect(resourceIds(resultOf<TreeNodeInfo[]>(await dispatch(ws, "tree", {}, vendor)))).toEqual([UI]);

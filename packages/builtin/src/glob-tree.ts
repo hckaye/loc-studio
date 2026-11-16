@@ -87,20 +87,33 @@ async function readFileWithRevision(file: string): Promise<{ data: Uint8Array; r
   }
 }
 
+/**
+ * フォルダの中の、ツリーの対象になるファイルの一覧（globTree の list と同じ決まり）。
+ * プロジェクトを作る前に、そのフォルダにすでにあるファイルを確かめるためにも使う。
+ */
+export async function listGlobTree(projectRoot: string, options: Record<string, unknown> = {}): Promise<TreeNode[]> {
+  const include = stringList(options["include"], DEFAULT_INCLUDE, "include");
+  const exclude = stringList(options["exclude"], DEFAULT_EXCLUDE, "exclude");
+  const opts = { dot: true };
+  const isIncluded = picomatch(include, opts);
+  const isExcluded = exclude.length > 0 ? picomatch(exclude, opts) : () => false;
+  return walk(path.resolve(projectRoot), "", isIncluded, isExcluded);
+}
+
+/** フォルダの中のファイルを読む（globTree の read と同じ決まり。フォルダの外は読まない）。 */
+export async function readGlobTreeFile(projectRoot: string, resourcePath: string): Promise<Uint8Array> {
+  return (await readFileWithRevision(resolveInside(projectRoot, resourcePath))).data;
+}
+
 export const globTree: TreeProvider = {
   id: "builtin.globTree",
 
   async list(ctx: TreeContext): Promise<TreeNode[]> {
-    const include = stringList(ctx.options["include"], DEFAULT_INCLUDE, "include");
-    const exclude = stringList(ctx.options["exclude"], DEFAULT_EXCLUDE, "exclude");
-    const opts = { dot: true };
-    const isIncluded = picomatch(include, opts);
-    const isExcluded = exclude.length > 0 ? picomatch(exclude, opts) : () => false;
-    return walk(path.resolve(ctx.projectRoot), "", isIncluded, isExcluded);
+    return listGlobTree(ctx.projectRoot, ctx.options);
   },
 
   async read(resource: ResourceRef, ctx: TreeContext): Promise<Uint8Array> {
-    return (await readFileWithRevision(resolveInside(ctx.projectRoot, resource.path))).data;
+    return readGlobTreeFile(ctx.projectRoot, resource.path);
   },
 
   async readWithRevision(resource: ResourceRef, ctx: TreeContext): Promise<{ data: Uint8Array; revision?: string }> {

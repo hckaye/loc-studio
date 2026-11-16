@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -98,6 +99,10 @@ function escapeUnicode(s) {
   console.log(`バンドルの確認: ${files.length} 個のサーバーのチャンク、${markers.length} 個の目印`);
   check(files.length > 0 && markers.length >= 5, "目印とチャンクが見つかる", { files: files.length, markers: markers.length });
   check(hits.length === 0, "サーバーのチャンクにサービス層（@loc-studio/*）のコードが入っていない", hits.slice(0, 5).join("\n      "));
+  // standalone だけをほかの場所に置いても動くこと（上の階層の node_modules に頼らない）。
+  const { missingDependencies } = createRequire(import.meta.url)("../../../scripts/standalone-deps.cjs");
+  const unresolved = missingDependencies(path.join(appDir, ".next", "standalone"));
+  check(unresolved.length === 0, "standalone の中だけで、サービス層の依存（acorn、pg など）を解決できる", unresolved);
 }
 
 /** Host などを自由に付けて送る（fetch は Host を変えられないため）。 */
@@ -339,6 +344,56 @@ try {
   const openBody = await open.json();
   check(openBody.result?.recentProjects?.[0] === project, "/api/session/open が最近の一覧に覚える", openBody);
 
+  // 新しいプロジェクトの作成（フォルダの確認と、設定ファイルの作成）
+  {
+    const post = async (pathname, body, headers = { Cookie: localCookie }) => {
+      const res = await fetch(`${base}${pathname}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    };
+    const made = path.join(tmp, "made", "new-game");
+    const input = { root: made, name: "New Game", languages: [{ id: "ja", label: "日本語", pinned: true }, { id: "en", label: "English", basedOn: "ja" }], firstResource: "text/main.csv" };
+    const noCookie = await post("/api/session/create", input, {});
+    check(noCookie.status === 401 && !existsSync(made), "合言葉のクッキーがなければ、プロジェクトは作れない（401）", noCookie.status);
+    const cross = await post("/api/session/create", input, { Cookie: localCookie, Origin: "http://evil.example" });
+    check(cross.status === 403 && !existsSync(made), "ほかのオリジンからは、プロジェクトを作れない（403）", cross.status);
+    const inspectNoCookie = await post("/api/session/inspect", { path: made }, {});
+    check(inspectNoCookie.status === 401, "合言葉のクッキーがなければ、フォルダは確かめられない（401）", inspectNoCookie.status);
+    const before = await post("/api/session/inspect", { path: made });
+    check(before.body?.result?.exists === false && !existsSync(made), "まだないフォルダは「ない」と答え、作らない", before.body);
+    const created = await post("/api/session/create", input);
+    check(created.body?.result?.project === made && created.body.result.resource === "text/main.csv" && created.body.result.recentProjects?.[0] === made, "プロジェクトを作り、最近の一覧に覚える", created.body);
+    check(
+      existsSync(path.join(made, "loc-studio.project.json")) && readFileSync(path.join(made, "text", "main.csv"), "utf8") === "key,ja,en\n",
+      "設定ファイルと、見出しだけの最初のファイルができる",
+    );
+    const call = async (root, method, params) => {
+      const res = await fetch(`${base}/api/rpc/${method}`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: localCookie }, body: JSON.stringify({ project: root, params }) });
+      return res.json().catch(() => null);
+    };
+    const madeInfo = await call(made, "info", {});
+    check(madeInfo?.result?.restricted !== true && madeInfo?.result?.name === "New Game", "作ったプロジェクトは、信頼の確認なしで開ける", madeInfo);
+    const configBefore = readFileSync(path.join(made, "loc-studio.project.json"), "utf8");
+    const again = await post("/api/session/create", { ...input, name: "Other" });
+    check(again.body?.error?.code === "conflict" && readFileSync(path.join(made, "loc-studio.project.json"), "utf8") === configBefore, "すでにプロジェクトのあるフォルダには作らず、設定ファイルを変えない", again.body);
+    const after = await post("/api/session/inspect", { path: made });
+    check(after.body?.result?.configFile === "loc-studio.project.json", "作ったあとのフォルダは、プロジェクトがあると答える", after.body);
+
+    // すでにある CSV に列を対応させる（設定に formats が入る）。作った本人の確認として記録し、開いたときに確認を出さない。
+    const mapped = path.join(tmp, "made", "mapped");
+    mkdirSync(mapped, { recursive: true });
+    writeFileSync(path.join(mapped, "ui.csv"), "ID,JP,EN\nOK,はい,Yes\n");
+    const seen = await post("/api/session/inspect", { path: mapped });
+    check(JSON.stringify(seen.body?.result?.resources) === JSON.stringify([{ path: "ui.csv", headers: ["ID", "JP", "EN"] }]), "すでにある CSV の見出しを返す", seen.body);
+    const mappedMade = await post("/api/session/create", { root: mapped, name: "Mapped", languages: [{ id: "ja" }, { id: "en", basedOn: "ja" }], mapping: { text: { ja: "JP", en: "EN" } } });
+    check(mappedMade.body?.result?.project === mapped, "列を対応させてプロジェクトを作れる", mappedMade.body);
+    const mappedInfo = await call(mapped, "info", {});
+    check(mappedInfo?.result?.restricted !== true, "列を対応させたプロジェクトも、信頼の確認なしで開ける", mappedInfo);
+    const mappedRows = await call(mapped, "rows", { resourceId: "ui.csv", languages: ["ja", "en"], offset: 0, limit: 10 });
+    check(mappedRows?.result?.rows?.[0]?.cells?.["text@ja"]?.value === "はい" && mappedRows.result.rows[0].cells["text@en"].value === "Yes", "対応させた列の本文を読める", mappedRows);
+    const bad = await post("/api/session/create", { root: path.join(tmp, "made", "bad"), name: "Bad", languages: [{ id: "ja jp" }] });
+    check(bad.body?.error?.code === "invalid" && !existsSync(path.join(tmp, "made", "bad")), "誤った入力（言語の ID）は invalid で、フォルダを作らない", bad.body);
+  }
+
   // 信頼していないプロジェクトを開いただけでは、設定ファイルに書かれた接続先に接続しない（環境変数の値を外に送らない）
   {
     const received = [];
@@ -546,6 +601,11 @@ console.log("\n== Web モード ==");
     check(after.status === 401, "ログアウトしたセッションは使えない（401）", after.status);
     const openFolder = await call("/api/session/open", { body: { project: wproject }, cookie: adminCookie });
     check(openFolder.status === 403, "Web モードでは任意のフォルダは開けない", openFolder.status);
+    const webMade = path.join(wtmp, "web-made");
+    const createFolder = await call("/api/session/create", { body: { root: webMade, name: "X", languages: [{ id: "ja" }] }, cookie: adminCookie });
+    check(createFolder.status === 403 && !existsSync(webMade), "Web モードでは、管理者でもプロジェクトを作れない", createFolder.status);
+    const inspectFolder = await call("/api/session/inspect", { body: { path: wtmp }, cookie: adminCookie });
+    check(inspectFolder.status === 403, "Web モードでは、サーバーのフォルダを確かめられない", inspectFolder.status);
     const token = adminCookie.split("=")[1] ?? "";
     check(!/admin-pass-1234|tom-pass-1234/.test(serverLog) && (token === "" || !serverLog.includes(decodeURIComponent(token))), "サーバーのログにパスワードやトークンが出ていない");
   } catch (err) {

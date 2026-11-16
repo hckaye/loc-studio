@@ -474,15 +474,28 @@ export interface GenerateParams {
   dryRun?: boolean;
 }
 
+/** 登録済みの拡張のうち、設定の画面で選べるもの。 */
+export interface AvailableExtensions {
+  columns: { id: string; label?: string; kind: ColumnDef["kind"]; scope: ColumnDef["scope"] }[];
+  validators: { id: string; label: string }[];
+}
+
 export interface RunActionParams {
   actionId: string;
   resourceId: string;
   keys?: string[];
+  /**
+   * keys の代わりに、条件に合う行を対象にする（条件は rows / query と同じ。languages は条件の「対象の言語」）。
+   * target が cell / row / selection のアクションで使える。合う行がなければ、アクションを呼ばずに matched: 0 を返す。
+   */
+  filter?: RowFilter & { languages: LanguageId[] };
   cellId?: string;
   language?: LanguageId;
 }
 
 export interface RunActionResult {
+  /** filter を指定したとき: 条件に合った行の数。 */
+  matched?: number;
   message?: string;
   open?: ActionResult["open"];
   patched: number;
@@ -528,6 +541,8 @@ export interface WorkspaceApi {
     project: ProjectConfig;
     projectFromCode: string[];
     projectFile: string;
+    /** 設定の columns / validators に名前（use）で書ける、登録済みの列と検証（設定の画面の選択肢）。 */
+    available: AvailableExtensions;
   }>;
   plugins(params?: NoParams): Promise<{
     plugins: PluginInfo[];

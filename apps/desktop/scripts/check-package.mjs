@@ -1,5 +1,6 @@
 // 梱包したデスクトップ版（electron-builder の出力）を実際に起動して確かめる。
-// 見るのは、サーバーが起動して画面が出ること、アプリを作り直さずにプラグインを後から足せること、終了でサーバーも止まること、
+// 見るのは、プロジェクトのない初めての起動から新しいプロジェクトを作れること、メニューの操作が画面に届くこと、
+// サーバーが起動して画面が出ること、アプリを作り直さずにプラグインを後から足せること、終了でサーバーも止まること、
 // 起動し直したときに前回の画面の状態（開いていたリソースと絞り込み）が戻ること。
 // 使い方: npm run build:web && npm run dist:desktop のあと npm run check:desktop
 //   アプリの場所は、環境変数 LOC_STUDIO_DESKTOP_APP（実行ファイルのパス）で指定できる。
@@ -92,10 +93,15 @@ let running;
  * アプリを起動して、ウィンドウの中のページを DevTools のプロトコルで操作できるようにする。
  * 起動のたびに、内部サーバーは別のポートで動く。
  */
-async function launch() {
+async function launch(opts = {}) {
   const childEnv = { ...process.env };
   delete childEnv.ELECTRON_RUN_AS_NODE;
-  const app = spawn(exe, ["--remote-debugging-port=0", `--user-data-dir=${userData}`, project], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const args = ["--remote-debugging-port=0", `--user-data-dir=${opts.userData ?? userData}`];
+  // inspectMain: メインプロセス（殻）にもつないで、アプリのメニューを押せるようにする。
+  if (opts.inspectMain) args.unshift("--inspect=0");
+  // project を null にすると、プロジェクトを渡さずに起動する（配布物をダブルクリックしたのと同じ）。
+  if (opts.project !== null) args.push(opts.project ?? project);
+  const app = spawn(exe, args, { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   const session = { app, log: "", exited: new Promise((resolve) => app.once("exit", resolve)) };
   running = session;
   app.stdout.on("data", (d) => (session.log += d));
@@ -154,6 +160,7 @@ async function launch() {
     if (r.exceptionDetails) throw new Error(`ページの中で失敗しました: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value;
   };
+  session.evaluate = evaluate;
   const until = async (expression, label, timeout = 30_000) => {
     for (const deadline = Date.now() + timeout; Date.now() < deadline; await sleep(150)) {
       if (await evaluate(expression).catch(() => false)) return;
@@ -161,15 +168,18 @@ async function launch() {
     throw new Error(`待っても成り立ちませんでした: ${label}`);
   };
   // 画面と同じ口（/api/rpc）を、ページの中から呼ぶ（合言葉のクッキーはページが持っている）。
-  const rpc = async (method, params = {}) => {
+  // projectPath を省くと、起動のときに渡したプロジェクト。
+  const rpc = async (method, params = {}, projectPath) => {
     const body = await evaluate(
-      `fetch("/api/rpc/${method}", { method: "POST", headers: { "Content-Type": "application/json" }, body: ${JSON.stringify(JSON.stringify({ params }))}, cache: "no-store" }).then((r) => r.json())`,
+      `fetch("/api/rpc/${method}", { method: "POST", headers: { "Content-Type": "application/json" }, body: ${JSON.stringify(JSON.stringify({ ...(projectPath ? { project: projectPath } : {}), params }))}, cache: "no-store" }).then((r) => r.json())`,
     );
     if (body?.error) throw new Error(`${method}: ${body.error.code} ${body.error.message}`);
     return body.result;
   };
   /** ウィンドウを閉じて、アプリと内部サーバーが止まるのを待つ。 */
   const quit = async () => {
+    // メインプロセスにつないだままだと、Node はデバッガーが離れるのを待って終了しない。先に離す。
+    session.mainSocket?.close();
     await Promise.race([send("Browser.close").catch(() => undefined), sleep(5000)]);
     await Promise.race([session.exited, sleep(20_000)]);
     const exited = app.exitCode !== null;
@@ -183,7 +193,59 @@ async function launch() {
     }
     return { exited, serverAlive };
   };
-  return { base, evaluate, until, rpc, quit };
+  /** メインプロセスで式を評価する（inspectMain のときだけ）。メニューの項目を、利用者が押したのと同じ道筋で動かす。 */
+  let mainEval;
+  if (opts.inspectMain) {
+    const m = /Debugger listening on (ws:\/\/\S+)/.exec(session.log);
+    if (!m) throw new Error(`メインプロセスのデバッガーにつなげませんでした: ${session.log.slice(-600)}`);
+    const mainSocket = new WebSocket(m[1]);
+    session.mainSocket = mainSocket;
+    await new Promise((resolve, reject) => {
+      mainSocket.addEventListener("open", resolve, { once: true });
+      mainSocket.addEventListener("error", reject, { once: true });
+    });
+    let mainId = 1;
+    const mainPending = new Map();
+    mainSocket.addEventListener("message", (ev) => {
+      const msg = JSON.parse(ev.data);
+      const p = mainPending.get(msg.id);
+      if (!p) return;
+      mainPending.delete(msg.id);
+      if (msg.error) p.reject(new Error(msg.error.message));
+      else p.resolve(msg.result);
+    });
+    mainEval = (expression) =>
+      new Promise((resolve, reject) => {
+        const id = mainId++;
+        mainPending.set(id, { resolve, reject });
+        mainSocket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true, includeCommandLineAPI: true } }));
+      }).then((r) => {
+        if (r.exceptionDetails) throw new Error(`メインプロセスで失敗しました: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+        return r.result.value;
+      });
+  }
+  if (mainEval) {
+    // 内部サーバーの出力を覚えておく（確認が途中で止まったときに、サーバー側の理由を出すため）。
+    await mainEval(
+      `(() => { const child = process._getActiveHandles().find((h) => h && h.constructor && h.constructor.name === "ChildProcess"); if (!child) return false; globalThis.__serverLog = ""; const add = (d) => (globalThis.__serverLog = (globalThis.__serverLog + d.toString("utf8")).slice(-8000)); child.stdout?.on("data", add); child.stderr?.on("data", add); return true; })()`,
+    );
+    session.serverLog = () => mainEval(`globalThis.__serverLog ?? ""`);
+  }
+  /** 「ファイル」メニューの項目の名前の並び（区切りは "-"）。sub を渡すと、その項目の下のメニュー。 */
+  const fileMenu = (sub) =>
+    mainEval(
+      `(() => { const { Menu } = require("electron"); let items = Menu.getApplicationMenu().items.find((i) => i.label === "ファイル").submenu.items; ${
+        sub ? `items = items.find((i) => i.label === ${JSON.stringify(sub)}).submenu.items;` : ""
+      } return items.map((i) => (i.type === "separator" ? "-" : i.label)); })()`,
+    );
+  /** 「ファイル」メニューの項目を押す。 */
+  const clickFileMenu = (label, sub) =>
+    mainEval(
+      `(() => { const { Menu } = require("electron"); let items = Menu.getApplicationMenu().items.find((i) => i.label === "ファイル").submenu.items; ${
+        sub ? `items = items.find((i) => i.label === ${JSON.stringify(sub)}).submenu.items;` : ""
+      } const item = items.find((i) => i.label === ${JSON.stringify(label)}); if (!item) return false; item.click(); return true; })()`,
+    );
+  return { base, evaluate, until, rpc, quit, fileMenu, clickFileMenu };
 }
 
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
@@ -193,6 +255,76 @@ const KEYS = `[...document.querySelectorAll("[data-row] .k-key")].map((c) => c.t
 const SEARCH_BOX = `document.querySelector('input[type=search][aria-label="検索"]')`;
 
 try {
+  console.log("== はじめての起動（プロジェクトなし）と、新しいプロジェクト ==");
+  {
+    // 設定フォルダも、開いた記録もない状態で、プロジェクトを渡さずに起動する（配布物を初めてダブルクリックしたときと同じ）。
+    const firstUser = path.join(tmp, "first-user");
+    const fresh = path.join(tmp, "fresh-game");
+    const second = path.join(tmp, "second-game");
+    const NEW_BUTTON = `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "新しいプロジェクトを作る…")`;
+    const CREATE_BUTTON = `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "プロジェクトを作る")`;
+    const PATH_FIELD = `document.querySelector("#new-project-path")`;
+    const setInput = (finder, value) =>
+      `(() => { const el = ${finder}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`;
+    const run = await launch({ userData: firstUser, project: null, inspectMain: true });
+    await run.until(`!!(${NEW_BUTTON}) && !(${NEW_BUTTON}).disabled`, "最初の画面に「新しいプロジェクトを作る…」が出る", 60_000);
+    check(true, "プロジェクトを渡さずに起動すると（別にサーバーを立てなくても）、最初の画面に「新しいプロジェクトを作る…」が出る");
+    check((await run.evaluate(`typeof window.locStudio?.pickFolder === "function" && typeof window.locStudio?.onCommand === "function"`)) === true, "画面から、フォルダを選ぶ窓とメニューの操作を使える");
+    const menu = await run.fileMenu();
+    check(menu.join("|") === "新しいプロジェクト…|プロジェクトを開く…|最近使ったプロジェクト|-|再読み込み|-|終了" || process.platform === "darwin", "「ファイル」メニューに「新しいプロジェクト…」がある", menu);
+
+    // 画面のボタンから作る。
+    await run.evaluate(`(${NEW_BUTTON}).click(), true`);
+    await run.until(`!!${PATH_FIELD}`, "作成の画面");
+    await run.evaluate(setInput(PATH_FIELD, fresh));
+    await run.until(`!!(${CREATE_BUTTON}) && !(${CREATE_BUTTON}).disabled`, "作成のボタンが押せる");
+    await run.evaluate(`(${CREATE_BUTTON}).click(), true`);
+    await run.until(`!!(${treeRow("main.csv")})`, "作ったプロジェクトが開く", 60_000);
+    check((await run.evaluate(`document.querySelectorAll('[role="dialog"]').length`)) === 0, "作ったプロジェクトは、信頼の確認なしで開く");
+    check(
+      existsSync(path.join(fresh, "loc-studio.project.json")) && readFileSync(path.join(fresh, "text", "main.csv"), "utf8") === "key,ja,en\n",
+      "フォルダ、設定ファイル、最初のファイルができる",
+    );
+    check((await run.evaluate("document.title")) === "fresh-game - loc-studio", "ウィンドウのタイトルに、プロジェクトの名前が出る");
+    await run.until(`(document.querySelector(".grid-empty")?.textContent ?? "").includes("まだ行がありません")`, "行の足し方の案内");
+    // 梱包したアプリの中のサーバーで、行を足して本文を書ける。
+    const madeTree = await run.rpc("tree", {}, fresh);
+    const madeResource = madeTree.find((n) => n.kind === "folder")?.children?.[0]?.resource ?? madeTree[0]?.resource;
+    await run.rpc("editEntries", { resourceId: madeResource?.id, changes: [{ type: "add", key: "TITLE", text: { ja: "はじめる" } }] }, fresh);
+    check(readFileSync(path.join(fresh, "text", "main.csv"), "utf8") === "key,ja,en\nTITLE,はじめる,\n", "作ったプロジェクトに、行と本文を書ける", readFileSync(path.join(fresh, "text", "main.csv"), "utf8"));
+
+    // メニューの「新しいプロジェクト…」: 開いているプロジェクトを離れて、作成の画面になる（ページは読み直さない）。
+    check((await run.clickFileMenu("新しいプロジェクト…")) === true, "メニューの「新しいプロジェクト…」を押せる");
+    await run.until(`!!${PATH_FIELD}`, "メニューから、作成の画面が出る");
+    check((await run.evaluate("document.title")) === "loc-studio", "メニューの「新しいプロジェクト…」で、作成の画面になる");
+    await run.evaluate(setInput(PATH_FIELD, second));
+    await run.until(`!!(${CREATE_BUTTON}) && !(${CREATE_BUTTON}).disabled`, "作成のボタンが押せる");
+    await run.evaluate(`(${CREATE_BUTTON}).click(), true`);
+    await run.until(`document.title === "second-game - loc-studio"`, "2 つ目のプロジェクトが開く", 60_000);
+    check(true, "メニューから、2 つ目のプロジェクトを作って開ける");
+
+    // メニューの「最近使ったプロジェクト」: 選んだプロジェクトに切り替わる（起動時の状態に戻らない）。
+    let recent = [];
+    for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(200)) {
+      recent = await run.fileMenu("最近使ったプロジェクト");
+      if (recent.length === 2) break;
+    }
+    check(recent.length === 2 && samePath(recent[0], second) && samePath(recent[1], fresh), "作ったプロジェクトが、メニューの「最近使ったプロジェクト」に新しい順で出る", recent);
+    check((await run.clickFileMenu(recent[1], "最近使ったプロジェクト")) === true, "「最近使ったプロジェクト」の項目を押せる");
+    await run.until(`document.title === "fresh-game - loc-studio"`, "選んだプロジェクトに切り替わる", 60_000);
+    await run.until(`${KEYS} === "TITLE"`, "そのプロジェクトの行が出る");
+    check(true, "メニューの「最近使ったプロジェクト」で、選んだプロジェクトに切り替わる");
+    const stoppedFirst = await run.quit();
+    check(stoppedFirst.exited && !stoppedFirst.serverAlive, "ウィンドウを閉じると、アプリと内部サーバーが止まる");
+
+    // 次の起動では、何も渡さなくても、最後に開いたプロジェクトが開く。
+    const again = await launch({ userData: firstUser, project: null });
+    await again.until(`document.title === "fresh-game - loc-studio" && ${KEYS} === "TITLE"`, "最後に開いたプロジェクトが開く", 60_000);
+    check(true, "次の起動では、最後に開いたプロジェクトが開く");
+    const stoppedAgainFirst = await again.quit();
+    check(stoppedAgainFirst.exited && !stoppedAgainFirst.serverAlive, "この起動も、ウィンドウを閉じると止まる");
+  }
+
   console.log("== 起動 ==");
   const first = await launch();
   const { evaluate, until, rpc } = first;
@@ -302,9 +434,15 @@ try {
   failures++;
   console.error(`\n確認の途中で失敗しました: ${err?.stack ?? err}`);
   if (running?.log.trim()) console.error(`アプリの出力（最後の部分）:\n${running.log.slice(-1500)}`);
+  // 止まったときの画面の文字（何を待っていたかを調べる手がかり）。
+  const shown = await running?.evaluate?.(`document.body.innerText.slice(0, 1500)`).catch(() => undefined);
+  if (shown) console.error(`画面の文字（最初の部分）:\n${shown}`);
+  const serverLog = await running?.serverLog?.().catch(() => undefined);
+  if (serverLog) console.error(`内部サーバーの出力（最後の部分。起動の合言葉は伏せる）:\n${serverLog.replace(/token=[^\s&"']+/g, "token=[token]").slice(-3000)}`);
 } finally {
   try {
     running?.socket?.close();
+    running?.mainSocket?.close();
   } catch {
     // すでに閉じている。
   }

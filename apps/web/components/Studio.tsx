@@ -22,6 +22,7 @@ import { useRowPages, type RowQuery } from "@/components/grid/useRowPages";
 import { ResourceTree } from "@/components/ResourceTree";
 import { Toolbar } from "@/components/Toolbar";
 import { ColumnsMenu, FavoritesMenu, QueryPanel } from "@/components/FindBar";
+import { MatchActions } from "@/components/MatchActions";
 import { SearchView } from "@/components/SearchView";
 import { EditModal } from "@/components/EditModal";
 import { ReviewPanel } from "@/components/ReviewPanel";
@@ -227,12 +228,15 @@ function StudioInner({
 
   // ---- ツリーとリソース
   const [tree, setTree] = useState<TreeNodeInfo[]>([]);
+  // ツリーを読み終えたか（読み終えて空なら、リソースの作り方を案内する）
+  const [treeLoaded, setTreeLoaded] = useState(false);
   const [resourceId, setResourceId] = useState<string | undefined>();
   const [statsToken, setStatsToken] = useState(0);
   const loadTree = useCallback(async () => {
     try {
       const t = await api.tree();
       setTree(t);
+      setTreeLoaded(true);
       return t;
     } catch (err) {
       reportError(err, "ツリーの読み込み");
@@ -882,6 +886,19 @@ function StudioInner({
             searchRef={searchRef}
             fileActions={fileActions}
             onFileAction={(a) => void runAction(a, [])}
+            matchActions={
+              resourceId && view === "grid" ? (
+                <MatchActions
+                  filter={rowFilter}
+                  languages={visibleLanguages}
+                  targets={[{ resourceId, path: resourceNames.get(resourceId) ?? resourceId }]}
+                  rows={rows.total}
+                  scope="このリソース"
+                  onDone={refreshAll}
+                  onJob={jobs.track}
+                />
+              ) : undefined
+            }
             onReload={() => void reload()}
             onDiscardAll={() => setConfirmDiscardAll(true)}
             {...(resourceId
@@ -969,6 +986,8 @@ function StudioInner({
                 onGroupBy={setGroupBy}
                 refreshToken={statsToken}
                 onJump={jumpToMatch}
+                onChanged={refreshAll}
+                onJob={jobs.track}
                 onClose={() => setView("grid")}
               />
             ) : resourceId ? (
@@ -999,10 +1018,14 @@ function StudioInner({
                 onViewportWidth={setViewportWidth}
                 initialScroll={restoreScroll && restoreScroll.resourceId === resourceId ? restoreScroll : undefined}
                 onScrolled={onGridScrolled}
-                emptyMessage={rows.totalAll > 0 ? "条件に合う行がありません" : "このリソースにはエントリがありません"}
+                emptyMessage={rows.totalAll > 0 ? "条件に合う行がありません" : "このリソースには、まだ行がありません。上の「行 ▾」の「行を追加…」で足せます。"}
               />
             ) : (
-              <div className="grid-empty">左のツリーからリソースを選んでください。</div>
+              <div className="grid-empty">
+                {treeLoaded && firstResource(tree) === undefined
+                  ? "このプロジェクトには、まだリソース（テキストのファイル）がありません。左の「リソースを作成」で、最初のファイルを作れます。"
+                  : "左のツリーからリソースを選んでください。"}
+              </div>
             )}
             {showDetail && resourceId && view === "grid" && (
               <DetailPanel

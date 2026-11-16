@@ -302,6 +302,52 @@ describe("run", () => {
     expect(r.stdout).toContain("反映 1");
   });
 
+  it("--where: 条件に合う行だけに実行し、合う行のないリソースは結果に出さない", async () => {
+    const r = await cli(["run", "fake.mark", "--json"], ["--languages", "ko", "--where", "key = UI_GOLD or text@ko = 확인"]);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({
+      actionId: "fake.mark",
+      matched: 2,
+      patched: 2,
+      failed: 0,
+      results: [{ resource: UI, cellId: "textStatus@ko", matched: 2, patched: 2, errors: [] }],
+    });
+    const ws = await openWs();
+    const status = async (resourceId: string, key: string) => (await ws.rowDetail({ resourceId, key })).row.cells["textStatus@ko"]!.value;
+    expect([await status(UI, "UI_OK"), await status(UI, "UI_CANCEL"), await status(UI, "UI_SAVE_CONFIRM"), await status(UI, "UI_GOLD")]).toEqual(["wip", "todo", "todo", "wip"]);
+    expect(await status(CHAPTER, "CH01_INTRO_001")).toBe("todo");
+  });
+
+  it("--where: 文字での出力は条件に合った行の数を出し、合う行がなければその旨を出して 0", async () => {
+    const r = await cli(["run", "fake.mark"], ["--languages", "ko", "--where", "key = UI_OK"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain(`${UI} textStatus@ko: 条件に合う行 1 / 反映 1\n`);
+    expect(r.stdout).toContain("作業中にする（fake.mark）: リソース 1 / 条件に合う行 1 / 反映 1 / 失敗 0\n");
+    expect(r.stdout).not.toContain(CHAPTER);
+    // 言語を書かない欄（「どれかの言語」）は、--languages の言語だけを見る。英語の本文にだけ合う条件は、韓国語が対象なら合わない。
+    const scoped = await cli(["run", "fake.mark"], ["--languages", "ko", "--where", "text ~ Trust"]);
+    expect(scoped.stdout).toContain("条件に合う行がありません。\n");
+    expect((await cli(["run", "fake.mark"], ["--languages", "ko,JaEnglish", "--where", "text ~ Trust"])).stdout).toContain("条件に合う行 1 / 反映 1");
+    const none = await cli(["run", "fake.mark"], ["--languages", "ko", "--where", "key = NOPE"]);
+    expect(none.code).toBe(0);
+    expect(none.stdout).toBe("条件に合う行がありません。\n作業中にする（fake.mark）: リソース 0 / 条件に合う行 0 / 反映 0 / 失敗 0\n");
+  });
+
+  it("--where の誤り（--keys との併用、ファイル全体が対象のアクション、式の誤り）は 2 で、何も変えない", async () => {
+    const both = await cli(["run", "fake.mark"], ["--languages", "ko", "--where", "key = UI_OK", "--keys", "UI_OK"]);
+    expect(both.code).toBe(2);
+    expect(both.stderr).toContain("--where と --keys は、どちらか一方だけ");
+    const file = await cli(["run", "fake.count"], ["--where", "key = UI_OK"]);
+    expect(file.code).toBe(2);
+    expect(file.stderr).toContain("--where は使えません");
+    const bad = await cli(["run", "fake.mark"], ["--languages", "ko", "--where", "nope = 1"]);
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain("nope");
+    const ws = await openWs();
+    expect((await ws.rowDetail({ resourceId: UI, key: "UI_OK" })).row.cells["textStatus@ko"]!.value).toBe("todo");
+  });
+
   it("file 対象: リソースごとに 1 回、メッセージを表示", async () => {
     const r = await cli(["run", "fake.count"]);
     expect(r.code).toBe(0);

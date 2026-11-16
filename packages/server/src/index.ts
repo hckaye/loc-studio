@@ -13,3 +13,5 @@ export type { ServerConfig, ServerDbConfig, ServerProject } from "./server-confi
 export { openServerRuntime } from "./runtime.js";
 export type { AdminApi, HandleRequest, ProjectSummary, ServerRuntime, ServerRuntimeOptions } from "./runtime.js";
 export { postgresAvailable } from "./pg-store.js";
+export { buildProjectConfig, createProject, inspectProjectFolder, MAX_INSPECTED_RESOURCES, NEW_PROJECT_ENCODINGS } from "./new-project.js";
+export type { CreateProjectOptions, FolderInspection, FolderResource, NewProjectEncoding, NewProjectInput, NewProjectLanguage, NewProjectMapping, NewProjectResult } from "./new-project.js";
