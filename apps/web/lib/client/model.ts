@@ -35,8 +35,9 @@ export function findOption(col: ColumnDef, value: unknown): EnumOption | undefin
   return opts.find((o) => o.value === v);
 }
 
+/** 列の表示名。名前のない本文の列とキーの列は、表の見出しと同じ「本文」「キー」にする（ほかは列の ID）。 */
 export function columnLabel(col: ColumnDef): string {
-  return col.label ?? col.id;
+  return col.label ?? (col.kind === "text" ? "本文" : col.kind === "key" ? "キー" : col.id);
 }
 
 export function isEnumColumn(col: ColumnDef): boolean {
@@ -104,7 +105,8 @@ const DEFAULT_WIDTH: Record<GridColumnKind, number> = {
   key: 200,
   text: 300,
   enum: 112,
-  review: 120,
+  // 判定の横に、最新の投稿のコメントと投稿者を出すので、選択式の列より広くする。
+  review: 180,
   string: 130,
   number: 90,
   boolean: 70,

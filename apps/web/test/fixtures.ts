@@ -107,8 +107,10 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
     save: vi.fn(async (): Promise<R<"save">> => ({ saved: 1, conflicts: [] })),
     saveAll: vi.fn(async (): Promise<R<"saveAll">> => ({ resources: 1, saved: 1, conflicts: 0, conflictList: [] })),
     setCell: vi.fn(async ({ value }: { value: unknown }) => ({ value, version: 6 })),
-    setCells: vi.fn(async () => ({ updated: 0, blocked: [] })),
-    postReview: vi.fn(),
+    setCells: vi.fn(async (_params: Parameters<WorkspaceApi["setCells"]>[0]): Promise<R<"setCells">> => ({ updated: 0, blocked: [] })),
+    postReview: vi.fn(async (_params: Parameters<WorkspaceApi["postReview"]>[0]): Promise<R<"postReview">> => {
+      throw new Error("postReview のモックに、テストで使う戻り値を入れてください。");
+    }),
     forwardReview: vi.fn(),
     runAction: vi.fn(async (_params: Parameters<WorkspaceApi["runAction"]>[0]): Promise<R<"runAction">> => ({ patched: 0 })),
     generate: vi.fn(async () => ({ total: 1, cached: 0, toRun: 1 })),

@@ -12,12 +12,17 @@ import {
   initialPins,
   optionLabel,
   textColumnOf,
+  type ColumnDef,
   type GridColumn,
 } from "@/lib/client/model";
 import { EMPTY_FILTERS, normalizeFilters, toRowFilter, type ToolbarFilters } from "@/lib/client/filters";
 import { loadPrefs, prefsFromServer, savePrefs, type Favorite, type GridPrefs, type LastState, type SortState, type TreeViewState } from "@/lib/client/prefs";
 import { StudioProvider, useToasts } from "@/components/context";
-import { Grid, selectedRowRange, type GridHandle, type Selection } from "@/components/grid/Grid";
+import { Grid, type CellMenuRequest, type GridHandle, type Selection } from "@/components/grid/Grid";
+import { clampSelection, collapseSelection, isMultiSelection, selectedCellCount, selectedRows, singleSelection } from "@/components/grid/selection";
+import { buildCellMenu } from "@/components/cell-menu";
+import { ContextMenu } from "@/components/ContextMenu";
+import { BulkReviewDialog, type BulkReviewTarget } from "@/components/BulkReviewDialog";
 import { useRowPages, type RowQuery } from "@/components/grid/useRowPages";
 import { ResourceTree } from "@/components/ResourceTree";
 import { Toolbar } from "@/components/Toolbar";
@@ -36,7 +41,6 @@ import { GenerateDialog, type GenerateRequest } from "@/components/GenerateDialo
 import { Dialog } from "@/components/Dialog";
 import { applyTheme } from "@/components/theme";
 import { SaveConflictsDialog, type SaveConflict } from "@/components/SaveConflictsDialog";
-import { SearchDialog } from "@/components/SearchDialog";
 import { PluginTrustDialog } from "@/components/PluginTrustDialog";
 import { defaultRendererLoader, RendererProvider, type RendererLoader } from "@/components/grid/renderers";
 import { UserMenu } from "@/components/web/UserMenu";
@@ -259,7 +263,7 @@ function StudioInner({
 
   // ---- 行
   const [filters, setFilters] = useState<ToolbarFilters>(() => normalizeFilters(lastRef.current.filters));
-  // 表（リソース 1 つ）か、検索ビュー（プロジェクト全体の結果）か。
+  // 表（リソース 1 つ）か、検索結果の表示（プロジェクト全体の結果）か。
   const [view, setView] = useState<"grid" | "search">(lastRef.current.view === "search" ? "search" : "grid");
   const [groupBy, setGroupBy] = useState<string[]>(() => (Array.isArray(lastRef.current.groupBy) ? lastRef.current.groupBy.filter((g) => typeof g === "string").slice(0, 2) : []));
   // 並べ替え。リソースを切り替えたら、リソースの中の順に戻す（最初に開いたリソースでは、前回の並べ替えを保つ）。
@@ -277,7 +281,7 @@ function StudioInner({
   const toggleSort = useCallback((gc: GridColumn) => {
     setSort((cur) => (cur?.cellId !== gc.cellId ? { cellId: gc.cellId, dir: "asc" } : cur.dir === "asc" ? { cellId: gc.cellId, dir: "desc" } : null));
   }, []);
-  /** サービス層に送る絞り込みの条件（表、ツリーの件数、検索ビューで同じもの）。 */
+  /** サービス層に送る絞り込みの条件（表、ツリーの件数、検索結果の表示で同じもの）。 */
   const rowFilter = useMemo(() => toRowFilter(filters, visibleLanguages), [filters, visibleLanguages]);
   const query: RowQuery | null = useMemo(() => {
     if (!resourceId) return null;
@@ -422,14 +426,16 @@ function StudioInner({
   const [problemsOpen, setProblemsOpen] = useState(false);
   const [generate, setGenerate] = useState<GenerateRequest | null>(null);
   const [saveConflicts, setSaveConflicts] = useState<SaveConflict[] | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [confirmDiscardAll, setConfirmDiscardAll] = useState(false);
   const [structure, setStructure] = useState<StructureRequest | null>(null);
   // 信頼していないプラグインがあれば、開いたときに最初に確認する
   // Web モードではプラグインの確認は出さない（置いたのは管理者）
   const [trustOpen, setTrustOpen] = useState(!web && info.untrustedPlugins > 0);
+  // 右クリックのメニューと、レビューの一括の投稿
+  const [cellMenu, setCellMenu] = useState<CellMenuRequest | null>(null);
+  const [bulkReview, setBulkReview] = useState<{ column: ColumnDef; targets: BulkReviewTarget[] } | null>(null);
   const anyDialog =
-    edit || review || conflict || langPicker || settingsOpen || pluginsOpen || problemsOpen || generate || saveConflicts || searchOpen || confirmDiscardAll || structure || trustOpen;
+    edit || review || bulkReview || conflict || langPicker || settingsOpen || pluginsOpen || problemsOpen || generate || saveConflicts || confirmDiscardAll || structure || trustOpen;
 
   const onJobFinished = useCallback(
     (job: JobInfo) => {
@@ -474,11 +480,22 @@ function StudioInner({
   const onEnumChoose = useCallback((row: RowInfo, gc: GridColumn, value: string) => void setCellValue(row, gc, value), [setCellValue]);
   const onCommitMeta = useCallback((row: RowInfo, gc: GridColumn, value: unknown) => void setCellValue(row, gc, value), [setCellValue]);
   const onReviewChoose = useCallback((row: RowInfo, gc: GridColumn, verdict: string) => setReview({ rowKey: row.key, gc, verdict }), []);
+  const onOpenReview = useCallback((row: RowInfo, gc: GridColumn) => setReview({ rowKey: row.key, gc }), []);
+  /** キーのセルのダブルクリック: 右クリックのメニューの「キーを変更…」と同じ窓を、その行のキーで開く。できない役割の人には、理由を知らせる。 */
+  const onRenameKey = useCallback(
+    (row: RowInfo) => {
+      if (!resourceId) return;
+      const allowed = canStructure(info);
+      if (!allowed.ok) return push("info", allowed.reason ?? "キーは変更できません");
+      setStructure({ kind: "rename", resourceId, key: row.key });
+    },
+    [resourceId, info, push],
+  );
 
+  /** 選んでいるセルのある行のキー（行番号の小さい順）。まだ読み込んでいない行は、読み込む。 */
   const selectedKeys = useCallback(async (): Promise<string[]> => {
-    const [lo, hi] = selectedRowRange(selection);
     const keys: string[] = [];
-    for (let i = lo; i <= hi; i++) {
+    for (const i of selectedRows(selection)) {
       const r = rowsRef.current.getRow(i) ?? (await rowsRef.current.loadRow(i));
       if (r) keys.push(r.key);
     }
@@ -591,7 +608,12 @@ function StudioInner({
       const k = e.key.toLowerCase();
       if (k === "f" && e.shiftKey) {
         e.preventDefault();
-        if (!anyDialog) setSearchOpen(true);
+        // プロジェクト全体から探す: 検索の範囲を「全体」にして、検索欄に入る（専用の窓は開かない）。
+        if (!anyDialog) {
+          setView("search");
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        }
         return;
       }
       if (k === "s") {
@@ -616,11 +638,11 @@ function StudioInner({
   // 絞り込みで行が減ったら、選択を範囲の中に戻す
   useEffect(() => {
     if (!rows.loaded) return;
-    setSelection((s) => (s.row < rows.total ? s : { ...s, row: Math.max(0, rows.total - 1), anchor: Math.max(0, rows.total - 1) }));
+    setSelection((s) => clampSelection(s, rows.total, Number.MAX_SAFE_INTEGER));
   }, [rows.total, rows.loaded]);
   // 列を隠したり言語を減らしたりして列が減ったら、選択を残っている列に戻す
   useEffect(() => {
-    setSelection((s) => (s.col < layout.all.length ? s : { ...s, col: Math.max(0, layout.all.length - 1) }));
+    setSelection((s) => clampSelection(s, Number.MAX_SAFE_INTEGER, layout.all.length));
   }, [layout.all.length]);
 
   // ---- 言語の表示とピン
@@ -648,21 +670,10 @@ function StudioInner({
   const onResize = useCallback((cellId: string, width: number) => setPrefs((p) => ({ ...p, widths: { ...(p.widths ?? {}), [cellId]: width } })), []);
 
 
-  // ---- 横断検索の結果へ移る
-  // index: 絞り込みを保ったまま移るときの、そのリソースで条件に合う行のうち何番目か（検索ビューから）。
+  // ---- プロジェクト全体の結果（検索の範囲が「全体」のときの表）の行へ移る
+  // index: 絞り込みを保ったまま移るときの、そのリソースで条件に合う行のうち何番目か。
   const [pendingJump, setPendingJump] = useState<(SearchHit & { index?: number }) | null>(null);
-  const jumpTo = useCallback(
-    (hit: SearchHit) => {
-      if (hit.language && !visibleLanguages.includes(hit.language)) updatePrefs({ visibleLanguages: [...visibleLanguages, hit.language] });
-      // 絞り込みがあると行が見つからないことがあるので外す
-      setFilters(EMPTY_FILTERS);
-      setView("grid");
-      setResourceId(hit.resourceId);
-      setPendingJump(hit);
-    },
-    [visibleLanguages, updatePrefs],
-  );
-  /** 検索ビューの結果の行へ移る。絞り込みは保つ（並べ替えは、行の位置を決めるために外す）。 */
+  /** 検索結果の表示の結果の行へ移る。絞り込みは保つ（並べ替えは、行の位置を決めるために外す）。 */
   const jumpToMatch = useCallback((target: { resourceId: string; key: string; index: number }) => {
     setSort(null);
     setView("grid");
@@ -792,8 +803,9 @@ function StudioInner({
   const currentUnsaved = currentNode?.unsaved ?? 0;
   const selRow = rows.getRow(selection.row);
   const selCol = layout.all[selection.col];
-  const [selLo, selHi] = selectedRowRange(selection);
-  const multi = selHi > selLo;
+  const selectedRowCount = useMemo(() => selectedRows(selection).length, [selection]);
+  const selectedCells = useMemo(() => selectedCellCount(selection), [selection]);
+  const multi = isMultiSelection(selection);
   const problemCount = info.warnings.length + info.pluginErrors.length + rows.diagnostics.length;
   const errorCount = info.pluginErrors.length + rows.diagnostics.filter((d) => d.severity === "error").length;
   const textCol = textColumnOf(info);
@@ -826,9 +838,6 @@ function StudioInner({
             👤 {info.user.name}
           </span>
         )}
-        <button type="button" className="btn small topbar-btn" onClick={() => setSearchOpen(true)} title="プロジェクト全体を検索（Ctrl+Shift+F）">
-          🔍 横断検索
-        </button>
         <button
           type="button"
           className="btn small topbar-btn"
@@ -842,8 +851,8 @@ function StudioInner({
         <button type="button" className="btn small topbar-btn" onClick={() => setPluginsOpen(true)}>
           プラグイン{info.pluginErrors.length > 0 && <span className="count-badge err">{info.pluginErrors.length}</span>}
         </button>
-        <button type="button" className="icon-btn topbar-btn" aria-label="設定" title="設定" onClick={() => setSettingsOpen(true)}>
-          ⚙
+        <button type="button" className="btn small topbar-btn" aria-label="設定" title="プロジェクト設定と、この PC の設定を開く" onClick={() => setSettingsOpen(true)}>
+          <span aria-hidden="true">⚙</span> 設定
         </button>
       </header>
       {!web && info.untrustedPlugins > 0 && !trustOpen && (
@@ -884,6 +893,8 @@ function StudioInner({
             showDetail={showDetail}
             onToggleDetail={() => updatePrefs({ showDetail: !showDetail })}
             searchRef={searchRef}
+            scope={view === "search" ? "project" : "resource"}
+            onScope={(scope) => setView(scope === "project" ? "search" : "grid")}
             fileActions={fileActions}
             onFileAction={(a) => void runAction(a, [])}
             matchActions={
@@ -903,15 +914,14 @@ function StudioInner({
             onDiscardAll={() => setConfirmDiscardAll(true)}
             {...(resourceId
               ? {
-                  onStructure: async (kind: "add" | "rename" | "remove") => {
-                    // 対象は選択中の行（追加は選択の最後の行の後ろ。行がなければ末尾）。
+                  onStructure: async (kind: "add" | "remove") => {
+                    // 対象は、選んでいるセルのある行（追加は、その最後の行の後ろ。行がなければ末尾）。
                     const keys = rows.total > 0 ? await selectedKeys() : [];
                     if (kind === "add") setStructure({ kind, resourceId, ...(keys.length > 0 ? { after: keys[keys.length - 1]! } : {}) });
                     else if (keys.length === 0) push("info", "行を選んでから実行してください");
-                    else if (kind === "remove") setStructure({ kind, resourceId, keys });
-                    else if (keys.length > 1) push("info", "キーを変える行を 1 つだけ選んでください");
-                    else setStructure({ kind, resourceId, key: keys[0]! });
+                    else setStructure({ kind, resourceId, keys });
                   },
+                  selectedRows: rows.total > 0 ? selectedRowCount : 0,
                 }
               : {})}
             structureDisabledReason={canStructure(info).reason}
@@ -930,15 +940,6 @@ function StudioInner({
             }
             viewControls={
               <>
-                <button
-                  type="button"
-                  className={`btn small${view === "search" ? " on" : ""}`}
-                  aria-pressed={view === "search"}
-                  title="いまの絞り込みに合う行を、すべてのリソースから集めて見る（件数、集計、CSV への書き出し）"
-                  onClick={() => setView((v) => (v === "search" ? "grid" : "search"))}
-                >
-                  検索ビュー
-                </button>
                 <ColumnsMenu
                   columns={info.columns}
                   hidden={hiddenColumns}
@@ -958,7 +959,7 @@ function StudioInner({
             <BulkBar
               editReason={canEdit(info).reason}
               runReason={canRun(info).reason}
-              count={selHi - selLo + 1}
+              count={selectedRowCount}
               layout={layout.all}
               actions={info.actions.filter((a) => a.target === "row" || a.target === "selection" || a.target === "cell")}
               onSetEnum={async (gc, value) => {
@@ -973,7 +974,7 @@ function StudioInner({
               }}
               onAction={async (a) => runAction(a, await selectedKeys(), selCol)}
               onGenerate={async (gc) => setGenerate({ column: gc.col, resourceId, keys: await selectedKeys(), languages: gc.language ? [gc.language] : visibleLanguages, scope: "selection" })}
-              onClear={() => setSelection((s) => ({ ...s, anchor: s.row }))}
+              onClear={() => setSelection(collapseSelection)}
             />
           )}
           <div className="grid-area">
@@ -1005,6 +1006,9 @@ function StudioInner({
                 selection={selection}
                 onSelectionChange={setSelection}
                 onOpenEditor={(rowIndex, gc) => setEdit({ rowIndex, gc })}
+                onOpenReview={onOpenReview}
+                onRenameKey={onRenameKey}
+                onCellMenu={setCellMenu}
                 onEnumChoose={onEnumChoose}
                 onReviewChoose={onReviewChoose}
                 onCommitMeta={onCommitMeta}
@@ -1018,7 +1022,7 @@ function StudioInner({
                 onViewportWidth={setViewportWidth}
                 initialScroll={restoreScroll && restoreScroll.resourceId === resourceId ? restoreScroll : undefined}
                 onScrolled={onGridScrolled}
-                emptyMessage={rows.totalAll > 0 ? "条件に合う行がありません" : "このリソースには、まだ行がありません。上の「行 ▾」の「行を追加…」で足せます。"}
+                emptyMessage={rows.totalAll > 0 ? "条件に合う行がありません" : "このリソースには、まだ行がありません。上の「＋ 行を追加」で足せます。"}
               />
             ) : (
               <div className="grid-empty">
@@ -1051,7 +1055,11 @@ function StudioInner({
           )}
           {rows.loading && <span className="spinner small" aria-label="読み込み中" />}
         </span>
-        {multi && <span>{selHi - selLo + 1} 行を選択</span>}
+        {multi && (
+          <span>
+            {selectedRowCount} 行・{selectedCells} セルを選択
+          </span>
+        )}
         {selRow && selCol && (
           <span className="status-cell" title={selCol.cellId}>
             <span className="mono">{selRow.key}</span> ・ {selCol.language ? `${info.languages.find((l) => l.id === selCol.language)?.label ?? selCol.language} / ` : ""}
@@ -1089,7 +1097,7 @@ function StudioInner({
             requestAnimationFrame(() => gridRef.current?.focus());
           }}
           onNavigate={(i) => {
-            setSelection((s) => ({ ...s, row: i, anchor: i }));
+            setSelection((s) => singleSelection(i, s.col));
             gridRef.current?.scrollToRow(i);
           }}
           onCellsChanged={(key, cells) => {
@@ -1098,6 +1106,48 @@ function StudioInner({
           }}
           onSetCell={(row, gc, value) => setCellValue(row, gc, value)}
           onOpenReview={(row, gc) => setReview({ rowKey: row.key, gc })}
+        />
+      )}
+      {cellMenu && resourceId && view === "grid" && (
+        <ContextMenu
+          x={cellMenu.x}
+          y={cellMenu.y}
+          label="セルと行の操作"
+          items={buildCellMenu(cellMenu, {
+            api,
+            info,
+            resourceId,
+            columns: layout.all,
+            rows,
+            visibleLanguages,
+            notify: push,
+            reportError,
+            refresh: refreshAll,
+            setCellValue,
+            runAction,
+            editText: (rowIndex, gc) => setEdit({ rowIndex, gc }),
+            openReview: onOpenReview,
+            bulkReview: (column, targets) => setBulkReview({ column, targets }),
+            generate: setGenerate,
+            structure: setStructure,
+            clearSelection: () => setSelection(collapseSelection),
+          })}
+          onClose={() => {
+            setCellMenu(null);
+            requestAnimationFrame(() => gridRef.current?.focus());
+          }}
+        />
+      )}
+      {bulkReview && resourceId && (
+        <BulkReviewDialog
+          resourceId={resourceId}
+          column={bulkReview.column}
+          targets={bulkReview.targets}
+          onClose={() => setBulkReview(null)}
+          onPosted={(key, cellId, cell) => {
+            patchCells(key, { [cellId]: cell });
+            setStatsToken((t) => t + 1);
+          }}
         />
       )}
       {review && resourceId && (
@@ -1181,7 +1231,6 @@ function StudioInner({
           onSkip={() => setTrustOpen(false)}
         />
       )}
-      {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onJump={jumpTo} resourceNames={resourceNames} />}
       {structure && (
         <StructureDialog
           request={structure}

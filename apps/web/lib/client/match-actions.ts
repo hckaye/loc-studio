@@ -4,7 +4,7 @@ import { isRpcError } from "@/lib/client/api";
 import { cellIdOf, columnAppliesTo, columnLabel, textColumnOf } from "@/lib/client/model";
 
 /*
- * 条件に合う行すべてにアクションを実行する（表の絞り込みと、検索ビューから）。
+ * 条件に合う行すべてにアクションを実行する（表の絞り込みと、検索結果の表示から）。
  * 行を選ぶのはサーバー（runAction の filter）。画面は、条件に合う行のあるリソースを順に回す。
  * 行の多いリソースはジョブになるので、1 つ終わるのを待ってから次のリソースに進む（ジョブの数の上限に当たらないように）。
  */

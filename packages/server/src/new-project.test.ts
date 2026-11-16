@@ -154,13 +154,18 @@ describe("buildProjectConfig（雛形の設定）", () => {
   });
 
   it("列と検証を外すと、その項目を書かない", () => {
-    expect(buildProjectConfig(input("/x", { statusColumn: false, reviewColumn: false, validators: false }))).toEqual({
+    expect(buildProjectConfig(input("/x", { statusColumn: false, reviewColumn: false, whitespaceValidator: false, untranslatedValidator: false }))).toEqual({
       name: "MyGame",
       languages: [
         { id: "ja", label: "日本語", pinned: true },
         { id: "en", label: "英語", basedOn: "ja" },
       ],
     });
+  });
+
+  it("空白の検証だけ、未翻訳の検証だけも選べる", () => {
+    expect(buildProjectConfig(input("/x", { untranslatedValidator: false })).validators).toEqual(["builtin.whitespace"]);
+    expect(buildProjectConfig(input("/x", { whitespaceValidator: false })).validators).toEqual(["builtin.untranslated"]);
   });
 
   it("進捗の列だけ、レビューの列だけも選べる", () => {

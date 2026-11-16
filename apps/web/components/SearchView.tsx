@@ -7,7 +7,7 @@ import { columnLabel, displayValue, findOption, optionLabel, worstSeverity, type
 import { queryFields } from "@/lib/client/query-text";
 
 /*
- * 検索ビュー: いまの絞り込みに合う行を、プロジェクトのすべてのリソースから集めて 1 つの表で見る。
+ * 検索結果の表示: いまの絞り込みに合う行を、プロジェクトのすべてのリソースから集めて 1 つの表で見る。
  * 件数と原文の量、欄の値ごとの集計を出し、結果と集計を CSV / TSV に書き出せる。行を選ぶと、そのリソースのその行へ移る。
  * 「一括アクション」で、条件に合う行すべて（プロジェクト全体）にアクションを実行できる。
  */
@@ -142,9 +142,9 @@ export function SearchView({ filter, languages, columns, groupBy, onGroupBy, ref
   const withMatches = matchTargets.length;
 
   return (
-    <div className="search-view" role="region" aria-label="検索ビュー">
+    <div className="search-view" role="region" aria-label="検索結果の表示">
       <div className="search-view-head">
-        <strong>検索ビュー（プロジェクト全体）</strong>
+        <strong>検索結果の表示（プロジェクト全体）</strong>
         <span className="muted small">{filtering ? "いまの絞り込みに合う行を、すべてのリソースから集めています。" : "絞り込みがないので、すべての行を出しています。上のツールバーで絞り込めます。"}</span>
         <span className="tb-grow" />
         <button type="button" className="btn small" onClick={onClose}>

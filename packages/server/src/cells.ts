@@ -360,6 +360,7 @@ export async function buildCells(
             if (v.version !== undefined) cell.version = v.version;
             if (v.updatedAt !== undefined) cell.updatedAt = v.updatedAt;
             if (v.updatedBy !== undefined) cell.updatedBy = v.updatedBy;
+            if (typeof v.comment === "string" && v.comment !== "") cell.comment = v.comment;
             if (v.basisHash !== undefined) {
               cell.basisHash = v.basisHash;
               const current = targetHash(ctx, doc, data, column, lang, values);

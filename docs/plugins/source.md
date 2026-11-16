@@ -27,7 +27,7 @@
 | 型 | 項目 |
 | --- | --- |
 | `CellRef` | `resourceId`、`entryKey`（行のキー）、`columnId`（列の ID）、`language?`（言語ごとの列のとき） |
-| `CellValue` | `CellRef` の項目に加えて、`value`、`version?`（値の版番号）、`updatedAt?`、`updatedBy?`、`basisHash?`（値を付けた時点の、対象の版） |
+| `CellValue` | `CellRef` の項目に加えて、`value`、`version?`（値の版番号）、`updatedAt?`、`updatedBy?`、`basisHash?`（値を付けた時点の、対象の版）、`comment?`（値に添えたコメント。レビュー列では、表のセルの判定の横に `updatedBy` と並べて出る） |
 | `CellWrite` | `CellRef` の項目に加えて、`value`、`expectedVersion?`（書き手が読んだときの版番号）、`basisHash?` |
 
 ## 競合の決まり
@@ -224,6 +224,8 @@ export default definePlugin({
 - 判定 `ng`（`requireComment`）をコメントなしで投稿すると、「判定「NG」にはコメントが必要です。」で断られました。
 - コメントつきの投稿は成功し、`rows` が、セル `qa@ko` の値として `ng`（`updatedBy` と `basisHash` つき）を返しました。
 - 投稿の前は、セル `qa@ko` の値は `type.default` の `none` でした。
+
+この例の `load` は `comment` を返さないので、表のセルには判定だけが出ます。同梱の `builtin.reviews` は、最新の投稿のコメントを `comment` に入れて返すので、セルに投稿者とコメントが出ます（`comment` を返す形にしたこの例は、動かして確かめていません）。
 
 この例は `addReviewLinks` を実装していません。レビューの転載先のアクションがリンクを返すと、転載は「リンクの保存（addReviewLinks）に対応していません。」の警告になります（投稿そのものは成功します）。リンクを保存するレビュー列ソースの実装は、同梱の `builtin.reviews` にあります。
 

@@ -59,7 +59,7 @@ export async function runAction(ctx: WsContext, params: RunActionParams): Promis
   const keys = params.keys ? [...new Set(params.keys)] : undefined;
   const why = { cause: "action" as const, causeRef: action.id };
 
-  // filter: 条件に合う行を対象にする（表の絞り込み、検索ビュー、コマンドラインの run --where）。
+  // filter: 条件に合う行を対象にする（表の絞り込み、検索結果の表示、コマンドラインの run --where）。
   let matched: EntryData[] | undefined;
   if (params.filter !== undefined) {
     if (typeof params.filter !== "object" || params.filter === null) throw new ApiError("invalid", "filter はオブジェクトで指定してください。");

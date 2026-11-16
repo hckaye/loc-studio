@@ -570,6 +570,50 @@ textarea.input {
 .toolbar .search {
   width: 240px;
 }
+/* ツールバー: 上の段は検索と絞り込み、下の段は操作、表示、保存。役目ごとのまとまり（tb-group）に見出し（tb-caption）を付ける。 */
+.toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 5px;
+}
+.tb-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+}
+.tb-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.tb-group + .tb-group {
+  padding-left: 12px;
+  border-left: 1px solid var(--line-strong);
+}
+.tb-caption,
+.tb-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: default;
+}
+.tb-caption {
+  font-weight: 600;
+  margin-right: 2px;
+}
+.tb-label {
+  margin-left: 4px;
+}
+.tb-clear {
+  color: var(--accent);
+}
+.toolbar .seg-btn {
+  padding: 0 7px;
+}
 .tb-sep {
   width: 1px;
   height: 20px;
@@ -787,14 +831,21 @@ textarea.input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 列の幅の取っ手。見出しのセルは中身を切り取るので、境目の両側のセルに置く（右端に 5px、次のセルの左端に 4px）。
+   列の見出し（下の段）と、言語の見出し（上の段）の両方にある。 */
 .g-resize {
   position: absolute;
-  right: -3px;
+  right: 0;
   top: 0;
-  width: 7px;
+  width: 5px;
   height: 100%;
   cursor: col-resize;
   z-index: 1;
+}
+.g-resize.g-resize-prev {
+  right: auto;
+  left: 0;
+  width: 4px;
 }
 .g-resize:hover {
   background: var(--accent-border);
@@ -814,8 +865,49 @@ textarea.input {
   gap: 4px;
   cursor: default;
 }
+/* 選んでいるセル（Shift / Ctrl で複数）。いまのセル（active）は、太い枠で示す。 */
+.g-cell.selected {
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
 .g-cell.active {
   box-shadow: inset 0 0 0 2px var(--accent-border);
+}
+/* 右クリックのメニュー（画面の座標に出す）。 */
+.context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 220px;
+  max-width: min(420px, 96vw);
+  max-height: calc(100vh - 8px);
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+}
+.context-menu .menu-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+}
+.context-menu .menu-item.danger {
+  color: var(--error);
+}
+.context-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line);
+}
+.context-menu-head {
+  padding: 4px 8px 2px;
+  white-space: nowrap;
+}
+.bulk-result ul {
+  max-height: 160px;
+  overflow: auto;
 }
 .grid-scroll:focus .g-cell.active {
   box-shadow: inset 0 0 0 2px var(--accent);
@@ -1006,6 +1098,30 @@ textarea.input {
 }
 .enum-btn-cell:hover {
   border-color: var(--line-strong);
+}
+/* レビュー列のセル: 判定の横に、最新の投稿のコメントと投稿者を出す（行の高さに合わせて折り返す）。 */
+.g-cell.k-review .enum-btn {
+  flex: none;
+}
+.review-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--lines, 1);
+  line-clamp: var(--lines, 1);
+  overflow: hidden;
+  max-height: calc(var(--lines, 1) * 20px);
+}
+.review-note-by {
+  margin-right: 4px;
+  font-weight: 600;
+  color: var(--text);
 }
 .enum-caret {
   color: var(--muted);
@@ -1991,46 +2107,6 @@ textarea.input {
   border-color: var(--good-border);
 }
 
-/* 横断検索 */
-.search-dialog {
-  width: min(760px, 100%);
-  max-height: min(760px, 100%);
-}
-.search-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.search-results {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  max-height: 520px;
-  overflow: auto;
-}
-.search-hit {
-  padding: 6px 10px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--line);
-}
-.search-hit.active {
-  background: var(--selected);
-}
-.search-hit-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.search-snippet {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 2px;
-}
 .btn.primary kbd {
   color: inherit;
   border-color: color-mix(in srgb, var(--accent-fg) 55%, transparent);
@@ -2302,11 +2378,25 @@ input[type="checkbox"]:disabled {
   padding: 24px;
   color: var(--muted);
 }
+/* 条件の窓。式の候補の一覧は、入力欄の下に窓からはみ出して出るので、窓そのものは中身を切り取らない
+   （切り取ると、一覧の下が見えず、下のほうの候補を選べない）。長くなるのは選んで作る条件の並びなので、そこだけをスクロールさせる。 */
 .query-panel {
   width: min(640px, 92vw);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: none;
+  overflow: visible;
+}
+.query-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 45vh;
+  overflow: auto;
+}
+.query-conditions:empty {
+  display: none;
 }
 .query-row {
   display: flex;
@@ -2346,7 +2436,7 @@ input[type="checkbox"]:disabled {
   margin: 2px 0 0;
   padding: 4px;
   list-style: none;
-  max-height: 240px;
+  max-height: min(240px, 45vh);
   overflow: auto;
   background: var(--bg);
   border: 1px solid var(--line-strong);
@@ -2420,7 +2510,7 @@ input[type="checkbox"]:disabled {
   color: var(--muted);
 }
 
-/* ---- 検索ビュー ---- */
+/* ---- 検索結果の表示 ---- */
 .search-view {
   flex: 1;
   min-width: 0;

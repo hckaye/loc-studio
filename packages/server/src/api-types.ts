@@ -195,6 +195,8 @@ export interface CellInfo {
   version?: number;
   updatedAt?: string;
   updatedBy?: string;
+  /** 列ソースが値に添えたコメント（レビュー列なら、最新の投稿のコメント。空なら付かない）。 */
+  comment?: string;
   /** basisHash が、対象の列のいまの値の版と違う（レビュー列、basis: "text" の列、生成列）。 */
   stale?: boolean;
   /** 本文のみ: 最後に編集したあとで、基になる言語の本文が変わった。 */
@@ -526,7 +528,7 @@ export interface WorkspaceApi {
   /** 保存せずに本文を確かめる（入力中の確認用）。何も保存しない。 */
   validateText(params: { resourceId: string; key: string; language: LanguageId; value: string }): Promise<IssueInfo[]>;
   search(params: { query: string; languages?: LanguageId[]; limit?: number }): Promise<SearchHit[]>;
-  /** リソースをまたいで、条件に合う行を数え、集計し、一覧にする。ツリーの件数、検索ビュー、コマンドラインの query が使う。 */
+  /** リソースをまたいで、条件に合う行を数え、集計し、一覧にする。ツリーの件数、検索結果の表示、コマンドラインの query が使う。 */
   query(req: QueryRequest): Promise<QueryResponse>;
   /** query の結果を CSV / TSV の文字列にする。 */
   exportQuery(req: ExportQueryRequest): Promise<ExportQueryResponse>;

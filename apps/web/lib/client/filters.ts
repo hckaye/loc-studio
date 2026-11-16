@@ -2,7 +2,7 @@ import type { RowFilter } from "@loc-studio/server";
 import type { Severity } from "@/lib/client/model";
 import type { BuilderState } from "@/lib/client/query-text";
 
-/* ツールバーの絞り込みの状態と、それをサービス層に送る形（RowFilter）にする処理。表、ツリーの件数、検索ビューが同じものを使う。 */
+/* ツールバーの絞り込みの状態と、それをサービス層に送る形（RowFilter）にする処理。表、ツリーの件数、検索結果の表示が同じものを使う。 */
 
 export interface ToolbarFilters {
   search: string;

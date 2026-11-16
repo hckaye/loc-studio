@@ -78,7 +78,8 @@ export function NewProject({ initialPath = "", onCancel, onCreated, onOpenExisti
   const [source, setSource] = useState(0);
   const [statusColumn, setStatusColumn] = useState(true);
   const [reviewColumn, setReviewColumn] = useState(true);
-  const [validators, setValidators] = useState(true);
+  const [whitespaceValidator, setWhitespaceValidator] = useState(true);
+  const [untranslatedValidator, setUntranslatedValidator] = useState(true);
   const [makeFirst, setMakeFirst] = useState(true);
   const [firstResource, setFirstResource] = useState(DEFAULT_FIRST_RESOURCE);
   const [encoding, setEncoding] = useState("auto");
@@ -197,7 +198,8 @@ export function NewProject({ initialPath = "", onCancel, onCreated, onOpenExisti
       }),
       statusColumn,
       reviewColumn,
-      validators,
+      whitespaceValidator,
+      untranslatedValidator,
     };
     if (hasFiles) {
       const text: Record<string, string> = {};
@@ -431,8 +433,12 @@ export function NewProject({ initialPath = "", onCancel, onCreated, onOpenExisti
               <span>レビューの列を付ける（未レビュー、レビュー中、差し戻し、承認）</span>
             </label>
             <label className="check">
-              <input type="checkbox" checked={validators} onChange={(e) => setValidators(e.target.checked)} />
-              <span>基本の検証を付ける（前後の空白、未翻訳）</span>
+              <input type="checkbox" checked={whitespaceValidator} onChange={(e) => setWhitespaceValidator(e.target.checked)} />
+              <span>空白の検証を付ける（前後の空白、連続した半角スペース）</span>
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={untranslatedValidator} onChange={(e) => setUntranslatedValidator(e.target.checked)} />
+              <span>未翻訳の検証を付ける（訳文が空、原文と同じ）</span>
             </label>
             <p className="muted small">ここで選んだ内容は、プロジェクトの設定ファイル（loc-studio.project.json）に書かれます。列、選択肢の名前、検証の規則は、あとからそのファイルで変えられます。</p>
           </section>

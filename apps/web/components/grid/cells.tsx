@@ -213,17 +213,27 @@ const CellBody = memo(function CellBody({ info, row, gc, editing, handlers, acti
       const raw = cell?.value;
       const value = raw === undefined || raw === null || raw === "" ? enumDefault(gc.col) : String(raw);
       if (gc.kind === "enum" && gc.col.renderer) return <ValueView info={info} row={row} gc={gc} handlers={handlers} {...(resourceId ? { resourceId } : {})} />;
+      // レビュー列: 最新の投稿にコメントがあれば、投稿者と一緒に判定の横に出す（差し戻しの理由を、表で読めるようにする）。
+      const note = gc.kind === "review" && typeof cell?.comment === "string" && cell.comment !== "" ? cell.comment : undefined;
       return (
-        <EnumSelect
-          inCell
-          options={options}
-          value={value}
-          label={gc.col.label ?? gc.col.id}
-          {...(cell?.stale ? { stale: true } : {})}
-          {...(!allowed.ok ? { disabled: true, title: allowed.reason } : {})}
-          optionProblem={(o) => optionProblem(info, gc.col, o, raw)}
-          onChoose={(v) => (gc.kind === "review" ? handlers.onReviewChoose(row, gc, v) : handlers.onEnumChoose(row, gc, v))}
-        />
+        <>
+          <EnumSelect
+            inCell
+            options={options}
+            value={value}
+            label={gc.col.label ?? gc.col.id}
+            {...(cell?.stale ? { stale: true } : {})}
+            {...(!allowed.ok ? { disabled: true, title: allowed.reason } : {})}
+            optionProblem={(o) => optionProblem(info, gc.col, o, raw)}
+            onChoose={(v) => (gc.kind === "review" ? handlers.onReviewChoose(row, gc, v) : handlers.onEnumChoose(row, gc, v))}
+          />
+          {note !== undefined && (
+            <span className="review-note" title={cell?.updatedBy ? `${cell.updatedBy}: ${note}` : note}>
+              {cell?.updatedBy && <span className="review-note-by">{cell.updatedBy}</span>}
+              <span className="review-note-text">{note}</span>
+            </span>
+          )}
+        </>
       );
     }
     case "string":

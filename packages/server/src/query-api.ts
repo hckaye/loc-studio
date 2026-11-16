@@ -1,6 +1,6 @@
 /**
  * リソースをまたぐ問い合わせ: 条件に合う行を数え（リソースごと）、集計し、一覧にする。CSV / TSV への書き出しも行う。
- * 条件は rows と同じ（RowFilter）。ツリーの件数、検索ビュー、コマンドラインの query が使う。
+ * 条件は rows と同じ（RowFilter）。ツリーの件数、検索結果の表示、コマンドラインの query が使う。
  */
 import { cellValueText, stableStringify } from "@loc-studio/core";
 import type { ColumnDef, EntryData, LanguageDef, ResourceRef } from "@loc-studio/sdk";

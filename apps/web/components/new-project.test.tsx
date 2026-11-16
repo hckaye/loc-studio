@@ -97,7 +97,8 @@ describe("新しいプロジェクトを作る画面", () => {
         ],
         statusColumn: true,
         reviewColumn: true,
-        validators: true,
+        whitespaceValidator: true,
+        untranslatedValidator: true,
         firstResource: "text/main.csv",
       },
     ]);
@@ -129,7 +130,8 @@ describe("新しいプロジェクトを作る画面", () => {
     fireEvent.click(screen.getByLabelText("2 番目の言語を原文にする"));
     fireEvent.click(screen.getByLabelText(/進捗の列を付ける/));
     fireEvent.click(screen.getByLabelText(/レビューの列を付ける/));
-    fireEvent.click(screen.getByLabelText(/基本の検証を付ける/));
+    fireEvent.click(screen.getByLabelText(/空白の検証を付ける/));
+    fireEvent.click(screen.getByLabelText(/未翻訳の検証を付ける/));
     fireEvent.click(screen.getByLabelText("テキストを入れる最初のファイルを作る"));
     expect((screen.getByLabelText(/ファイルの場所/) as HTMLInputElement).disabled).toBe(true);
     type(nameInput(), "  Renamed  ");
@@ -145,8 +147,38 @@ describe("新しいプロジェクトを作る画面", () => {
         ],
         statusColumn: false,
         reviewColumn: false,
-        validators: false,
+        whitespaceValidator: false,
+        untranslatedValidator: false,
       },
+    ]);
+  });
+
+  it("空白の検証と未翻訳の検証は、別々に外せる", async () => {
+    const { of } = stubFetch((url) => (url === "/api/session/inspect" ? { result: EMPTY_FOLDER } : { result: { project: "/games/new-game", warnings: [], recentProjects: [] } }));
+    const handlers = renderNew({ initialPath: "/games/new-game" });
+    await screen.findByText(/このフォルダはまだありません/);
+    const whitespace = screen.getByLabelText("空白の検証を付ける（前後の空白、連続した半角スペース）") as HTMLInputElement;
+    const untranslated = screen.getByLabelText("未翻訳の検証を付ける（訳文が空、原文と同じ）") as HTMLInputElement;
+    expect([whitespace.checked, untranslated.checked]).toEqual([true, true]);
+
+    // 未翻訳だけを外す
+    fireEvent.click(untranslated);
+    expect([whitespace.checked, untranslated.checked]).toEqual([true, false]);
+    await press("プロジェクトを作る");
+    await waitFor(() => expect(handlers.onCreated).toHaveBeenCalledTimes(1));
+    const sent = () => of("/api/session/create").map((c) => ({ whitespaceValidator: c.body.whitespaceValidator, untranslatedValidator: c.body.untranslatedValidator }));
+    expect(sent()).toEqual([{ whitespaceValidator: true, untranslatedValidator: false }]);
+  });
+
+  it("空白の検証だけを外すと、未翻訳の検証は付けたまま送る", async () => {
+    const { of } = stubFetch((url) => (url === "/api/session/inspect" ? { result: EMPTY_FOLDER } : { result: { project: "/games/new-game", warnings: [], recentProjects: [] } }));
+    const handlers = renderNew({ initialPath: "/games/new-game" });
+    await screen.findByText(/このフォルダはまだありません/);
+    fireEvent.click(screen.getByLabelText(/空白の検証を付ける/));
+    await press("プロジェクトを作る");
+    await waitFor(() => expect(handlers.onCreated).toHaveBeenCalledTimes(1));
+    expect(of("/api/session/create").map((c) => ({ whitespaceValidator: c.body.whitespaceValidator, untranslatedValidator: c.body.untranslatedValidator }))).toEqual([
+      { whitespaceValidator: false, untranslatedValidator: true },
     ]);
   });
 
@@ -204,7 +236,8 @@ describe("新しいプロジェクトを作る画面", () => {
         ],
         statusColumn: true,
         reviewColumn: true,
-        validators: true,
+        whitespaceValidator: true,
+        untranslatedValidator: true,
         mapping: { key: "ID", text: { ja: "JP", en: "EN" } },
       },
     ]);
@@ -427,7 +460,7 @@ describe("作ったばかりのプロジェクトの画面", () => {
 
   it("行のないリソースでは、行の足し方を案内する", async () => {
     renderStudio((api) => api.rows.mockResolvedValue({ total: 0, totalAll: 0, rows: [], diagnostics: [] }));
-    expect(await screen.findByText("このリソースには、まだ行がありません。上の「行 ▾」の「行を追加…」で足せます。")).toBeTruthy();
+    expect(await screen.findByText("このリソースには、まだ行がありません。上の「＋ 行を追加」で足せます。")).toBeTruthy();
   });
 
   it("絞り込みで行がなくなったときは、行の足し方ではなく、条件に合う行がないと伝える", async () => {

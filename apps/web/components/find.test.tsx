@@ -10,7 +10,7 @@ import type { Favorite, GridPrefs } from "@/lib/client/prefs";
 import { ResourceTree } from "@/components/ResourceTree";
 import { makeInfo, makeRow, mockApi } from "@/test/fixtures";
 
-/* 条件の組み立て、お気に入り、列の表示、ツリーの件数、検索ビュー、前回の状態の復元。 */
+/* 条件の組み立て、お気に入り、列の表示、ツリーの件数、検索結果の表示、前回の状態の復元。 */
 
 const info = makeInfo();
 
@@ -29,7 +29,7 @@ const openPanel = () => fireEvent.click(screen.getByRole("button", { name: /^条
 const select = (name: string, value: string) => fireEvent.change(screen.getByLabelText(name), { target: { value } });
 const apply = () => fireEvent.click(screen.getByRole("button", { name: "この条件で絞り込む" }));
 
-describe("条件を選んで組み立てる", () => {
+describe("条件を選んで作る（検索条件を設定）", () => {
   it("欄、言語、比べ方、値を選ぶと式ができ、サーバーで確かめてから当てる", async () => {
     const { onApply, validate } = renderPanel();
     openPanel();
@@ -110,7 +110,7 @@ describe("条件を選んで組み立てる", () => {
   });
 });
 
-describe("条件を式で書く", () => {
+describe("条件を式で書く（カスタムクエリ）", () => {
   const typeText = (value: string) => {
     const input = screen.getByLabelText("条件式") as HTMLInputElement;
     fireEvent.change(input, { target: { value, selectionStart: value.length, selectionEnd: value.length } });
@@ -121,7 +121,7 @@ describe("条件を式で書く", () => {
   it("入力に合わせて候補を出し、↑↓ と Enter で入れる。欄、言語、比べ方、値、and / or の順に進む", async () => {
     const { onApply } = renderPanel();
     openPanel();
-    fireEvent.click(screen.getByRole("button", { name: "式で書く" }));
+    fireEvent.click(screen.getByRole("button", { name: "カスタムクエリ" }));
     let input = typeText("st");
     expect(options()).toEqual(["status@状態（言語ごと）", "stale@要確認（言語ごと）"]);
     fireEvent.keyDown(input, { key: "Enter" });
@@ -147,12 +147,41 @@ describe("条件を式で書く", () => {
     await waitFor(() => expect(onApply).toHaveBeenCalledWith("status@en = done", null));
   });
 
-  it("組み立てた条件から「式で書く」に切り替えると、その式から書き始められる。式だけの条件を開くと、式で始まる", async () => {
+  it("↑↓ で選んだ候補を、一覧の見える位置に出す（一覧に入りきらない下の候補も選べる）", () => {
+    // jsdom には scrollIntoView がないので、呼ばれた要素を記録するものを置く。
+    const scrolled: string[] = [];
+    const proto = Element.prototype as { scrollIntoView?: unknown };
+    const original = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    try {
+      renderPanel();
+      openPanel();
+      fireEvent.click(screen.getByRole("button", { name: "カスタムクエリ" }));
+      const input = typeText("status@");
+      expect(options()).toHaveLength(4);
+      scrolled.length = 0;
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      expect(scrolled).toEqual(["query-suggestion-1", "query-suggestion-2", "query-suggestion-3"]);
+      expect(screen.getByRole("option", { selected: true }).textContent).toBe("status@all状態（すべての言語）");
+      // 選んだ候補が、そのまま入る。
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect((screen.getByLabelText("条件式") as HTMLInputElement).value).toBe("status@all ");
+    } finally {
+      if (original === undefined) delete proto.scrollIntoView;
+      else proto.scrollIntoView = original;
+    }
+  });
+
+  it("選んで作った条件から「カスタムクエリ」に切り替えると、その式から書き始められる。式だけの条件を開くと、式で始まる", async () => {
     renderPanel();
     openPanel();
     select("条件 1 の欄", "note");
     fireEvent.change(screen.getByLabelText("条件 1 の値"), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: "式で書く" }));
+    fireEvent.click(screen.getByRole("button", { name: "カスタムクエリ" }));
     expect((screen.getByLabelText("条件式") as HTMLInputElement).value).toBe('note ~ "x"');
   });
 
@@ -194,7 +223,7 @@ describe("お気に入り", () => {
     fireEvent.click(screen.getByRole("button", { name: /お気に入り/ }));
     fireEvent.click(screen.getByRole("button", { name: "お気に入り「未翻訳の英語」を削除" }));
     expect(onDelete).toHaveBeenCalledWith("未翻訳の英語");
-    // 検索ビューで開くお気に入りには、印が付く。
+    // 検索結果の表示で開くお気に入りには、印が付く。
     fireEvent.click(screen.getByRole("button", { name: "🔎 全体の問題" }));
     expect(onApply).toHaveBeenCalledWith(favorites[1]);
   });
@@ -207,8 +236,8 @@ describe("列の表示", () => {
     // 隠せる列は 7 つ（キー以外）。1 つ隠している。
     fireEvent.click(screen.getByRole("button", { name: "表示する列を選ぶ（6 / 7）" }));
     const box = (name: RegExp) => screen.getByRole("checkbox", { name }) as HTMLInputElement;
-    expect(box(/^key/).disabled).toBe(true);
-    expect(box(/^key/).checked).toBe(true);
+    expect(box(/^キー/).disabled).toBe(true);
+    expect(box(/^キー/).checked).toBe(true);
     expect(box(/^メモ/).checked).toBe(false);
     fireEvent.click(box(/^状態/));
     expect(onChange).toHaveBeenLastCalledWith(["note", "status"]);
@@ -490,7 +519,7 @@ describe("ツリーの件数の問い合わせ", () => {
   });
 });
 
-describe("検索ビュー", () => {
+describe("検索結果の表示", () => {
   const cellsOf = (i: number) => ({ "text@ja": { value: `日本語${i}` }, "text@en": { value: "" }, "status@en": { value: "done" } });
   // キーは、表のモックの行（KEY_0、KEY_1、…）と同じにする（行へ移る確認で、移った先の行と照らすため）。
   const ROWS = [
@@ -514,8 +543,8 @@ describe("検索ビュー", () => {
     );
   };
   const openView = async () => {
-    fireEvent.click(screen.getByRole("button", { name: "検索ビュー" }));
-    return screen.findByRole("region", { name: "検索ビュー" });
+    fireEvent.click(screen.getByRole("button", { name: "全体" }));
+    return screen.findByRole("region", { name: "検索結果の表示" });
   };
 
   it("いまの絞り込みに合う行を、すべてのリソースから集めて、件数と原文の量と一緒に出す", async () => {
@@ -548,7 +577,7 @@ describe("検索ビュー", () => {
   });
 
   it("行を選ぶと、絞り込みを保ったまま、そのリソースのその行へ移る（まだ読み込んでいない位置の行でも）", async () => {
-    // b.csv には 250 行あり、絞り込むと KEY_50 から後ろの 200 行が合う。検索ビューには、そのうち KEY_50〜KEY_200 の 151 行が出ている。
+    // b.csv には 250 行あり、絞り込むと KEY_50 から後ろの 200 行が合う。検索結果の表示には、そのうち KEY_50〜KEY_200 の 151 行が出ている。
     const all = Array.from({ length: 250 }, (_, i) => makeRow(i));
     const matching = all.slice(50);
     const found = matching.slice(0, 151).map((r) => ({ resourceId: "b.csv", path: "dir/b.csv", key: r.key, cells: { "text@ja": r.cells["text@ja"]! } }));
@@ -567,7 +596,7 @@ describe("検索ビュー", () => {
     const view = await openView();
     // KEY_200 は、b.csv で条件に合う行の 151 番目（0 始まりで 150）。リソースの中では 201 番目なので、その位置では見つからない。
     fireEvent.click(await within(view).findByText("日本語200"));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "検索ビュー" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "検索結果の表示" })).toBeNull());
     await waitFor(() => expect(lastRows(api)).toMatchObject({ resourceId: "b.csv", onlyUntranslated: true }));
     await waitFor(() => expect(container.querySelector<HTMLElement>(".grid-scroll")?.getAttribute("aria-activedescendant")).toMatch(/^gc-150-/));
     expect(screen.queryByText(/の行が表に見つかりませんでした/)).toBeNull();
@@ -656,15 +685,15 @@ describe("検索ビュー", () => {
     await waitFor(() => expect(within(view).getAllByRole("alert").some((el) => el.textContent === "つながりません")).toBe(true));
   });
 
-  it("検索ビューを開いていたことと、集計の区切りも、前回の状態として戻る", async () => {
+  it("検索結果の表示を開いていたことと、集計の区切りも、前回の状態として戻る", async () => {
     const { api } = await renderStudio((a) => {
       prepare(a);
       a.uiState.mockResolvedValue({ state: { last: { resourceId: "a.csv", view: "search", groupBy: ["resource"], filters: { ...EMPTY_FILTERS, onlyStale: true } } } });
     }, { waitForGrid: false });
-    const view = await screen.findByRole("region", { name: "検索ビュー" });
+    const view = await screen.findByRole("region", { name: "検索結果の表示" });
     await within(view).findByRole("table", { name: "集計の表" });
     expect(api.query).toHaveBeenCalledWith(expect.objectContaining({ onlyStale: true, groupBy: ["resource"], limit: 200 }));
     fireEvent.click(within(view).getByRole("button", { name: "表に戻る" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "検索ビュー" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "検索結果の表示" })).toBeNull());
   });
 });

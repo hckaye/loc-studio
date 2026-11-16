@@ -66,6 +66,19 @@ describe("postReview", () => {
     expect(r.verdict).toBe("back");
   });
 
+  it("表の行は、最新の投稿のコメントと投稿者を返す。コメントのない投稿が最新になると、コメントは付かない", async () => {
+    const cellOf = async () => {
+      const page = await ws.rows({ resourceId: CHAPTER, languages: ["ko"], offset: 0, limit: 1000 });
+      return page.rows.find((r) => r.key === base.key)!.cells["reviewStatus@ko"]!;
+    };
+    // 投稿のないセルには、どちらも付かない。
+    expect(await cellOf()).toEqual({ value: "none" });
+    const back = await ws.postReview({ ...base, verdict: "back", comment: "訳を直して" });
+    expect(await cellOf()).toEqual({ value: "back", updatedAt: back.createdAt, updatedBy: "tester", comment: "訳を直して", basisHash: textHash("여기는…… 어디지?") });
+    const ok = await ws.postReview({ ...base, verdict: "ok", comment: "" });
+    expect(await cellOf()).toEqual({ value: "ok", updatedAt: ok.createdAt, updatedBy: "tester", basisHash: textHash("여기는…… 어디지?") });
+  });
+
   it("対象の本文が変わると stale（ドラフトも含む）", async () => {
     await ws.postReview({ ...base, verdict: "ok", comment: "" });
     expect((await ws.reviews(base))[0]!.stale).toBe(false);

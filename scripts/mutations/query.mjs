@@ -1,5 +1,5 @@
 // 壊し方の一覧: 条件式（where）、リソースをまたぐ問い合わせと書き出し、画面の状態の保存と復元、
-// 条件を組み立てる部品、ツリーの件数、検索ビュー、列の表示、コマンドラインの query。
+// 条件を組み立てる部品、ツリーの件数、検索結果の表示、列の表示、コマンドラインの query。
 // 使い方: node scripts/mutation-check.mjs scripts/mutations/query.mjs
 // 実装を直して from の文字列が変わったら、ここも合わせる（合わないものは SKIP と出る）。
 export default [
@@ -63,11 +63,11 @@ export default [
   {"name": "前回の絞り込みを戻さない", "file": "apps/web/components/Studio.tsx", "from": "useState<ToolbarFilters>(() => normalizeFilters(lastRef.current.filters));", "to": "useState<ToolbarFilters>(EMPTY_FILTERS);", "tests": "apps/web/components/find.test.tsx"},
   {"name": "前回選んでいたセルを戻さない", "file": "apps/web/components/Studio.tsx", "from": "? { row: sc.row, col: sc.col, anchor: sc.row } : { row: 0, col: 0, anchor: 0 };", "to": "? { row: 0, col: 0, anchor: 0 } : { row: 0, col: 0, anchor: 0 };", "tests": "apps/web/components/find.test.tsx"},
   {"name": "前回と違うリソースでも、前回の位置を使う", "file": "apps/web/components/Studio.tsx", "from": "      if (resourceId !== undefined && lastRef.current.scroll?.resourceId !== resourceId) {", "to": "      if (false) {", "tests": "apps/web/components/find.test.tsx"},
-  {"name": "検索ビューを開いていたことを戻さない", "file": "apps/web/components/Studio.tsx", "from": "useState<\"grid\" | \"search\">(lastRef.current.view === \"search\" ? \"search\" : \"grid\");", "to": "useState<\"grid\" | \"search\">(\"grid\");", "tests": "apps/web/components/find.test.tsx"},
+  {"name": "検索結果の表示を開いていたことを戻さない", "file": "apps/web/components/Studio.tsx", "from": "useState<\"grid\" | \"search\">(lastRef.current.view === \"search\" ? \"search\" : \"grid\");", "to": "useState<\"grid\" | \"search\">(\"grid\");", "tests": "apps/web/components/find.test.tsx"},
   {"name": "お気に入りの同じ名前を、置き換えずに足す", "file": "apps/web/components/Studio.tsx", "from": "updatePrefs({ favorites: [...favorites.filter((f) => f.name !== name), favorite] });", "to": "updatePrefs({ favorites: [...favorites, favorite] });", "tests": "apps/web/components/find.test.tsx"},
   {"name": "お気に入りを選んでも、並べ替えを戻さない", "file": "apps/web/components/Studio.tsx", "from": "      setSort(f.sort && typeof f.sort.cellId === \"string\" ? f.sort : null);\n", "to": "", "tests": "apps/web/components/find.test.tsx"},
   {"name": "条件を確かめるときに、リソースを読む", "file": "apps/web/components/Studio.tsx", "from": "await api.query({ languages: visibleLanguages, resourceIds: [], where, limit: 0 });", "to": "await api.query({ languages: visibleLanguages, where, limit: 0 });", "tests": "apps/web/components/find.test.tsx"},
-  {"name": "検索ビューから移るときに、行の位置を使わない", "file": "apps/web/components/Studio.tsx", "from": "setPendingJump({ resourceId: target.resourceId, key: target.key, snippet: target.key, index: target.index });", "to": "setPendingJump({ resourceId: target.resourceId, key: target.key, snippet: target.key });", "tests": "apps/web/components/find.test.tsx"},
+  {"name": "検索結果の表示から移るときに、行の位置を使わない", "file": "apps/web/components/Studio.tsx", "from": "setPendingJump({ resourceId: target.resourceId, key: target.key, snippet: target.key, index: target.index });", "to": "setPendingJump({ resourceId: target.resourceId, key: target.key, snippet: target.key });", "tests": "apps/web/components/find.test.tsx"},
   {"name": "スクロールの位置を戻さない", "file": "apps/web/components/grid/Grid.tsx", "from": "    if (!el || !initialScroll || restoredRef.current || !rows.loaded) return;", "to": "    if (true) return;", "tests": "apps/web/components/find.test.tsx"},
   {"name": "ツリーの見え方を戻さない", "file": "apps/web/components/Studio.tsx", "from": "          initialView={lastRef.current.tree}\n", "to": "", "tests": "apps/web/components/find.test.tsx"},
   {"name": "ツリーの見え方を保存しない", "file": "apps/web/components/Studio.tsx", "from": "      ...(treeView ? { tree: treeView } : {}),\n", "to": "", "tests": "apps/web/components/find.test.tsx"},
@@ -77,10 +77,10 @@ export default [
   {"name": "「該当ありだけ」が効かない", "file": "apps/web/components/ResourceTree.tsx", "from": "  const shown = match && onlyMatching ? hideEmpty(named) : named;", "to": "  const shown = named;", "tests": "apps/web/components/find.test.tsx"},
   {"name": "合う行のないリソースを、薄くしない", "file": "apps/web/components/ResourceTree.tsx", "from": "${matched === 0 ? \" no-match\" : \"\"}", "to": "", "tests": "apps/web/components/find.test.tsx"},
   {"name": "件数を、行ごと取って数える", "file": "apps/web/components/ResourceTree.tsx", "from": "resourceIds: ids.slice(i, i + MATCH_BATCH), limit: 0 });", "to": "resourceIds: ids.slice(i, i + MATCH_BATCH), limit: 100 });", "tests": "apps/web/components/find.test.tsx"},
-  {"name": "検索ビューで、リソースの中の位置を数えない", "file": "apps/web/components/SearchView.tsx", "from": "    for (let i = 0; i < at; i++) if (rows[i]!.resourceId === rows[at]!.resourceId) n++;\n", "to": "", "tests": "apps/web/components/find.test.tsx"},
+  {"name": "検索結果の表示で、リソースの中の位置を数えない", "file": "apps/web/components/SearchView.tsx", "from": "    for (let i = 0; i < at; i++) if (rows[i]!.resourceId === rows[at]!.resourceId) n++;\n", "to": "", "tests": "apps/web/components/find.test.tsx"},
   {"name": "CSV に BOM を付けない", "file": "apps/web/components/SearchView.tsx", "from": "BOM + r.text", "to": "r.text", "tests": "apps/web/components/find.test.tsx"},
   {"name": "コピーを CSV の形にする", "file": "apps/web/components/SearchView.tsx", "from": "format: how === \"csv\" ? \"csv\" : \"tsv\"", "to": "format: \"csv\"", "tests": "apps/web/components/find.test.tsx"},
-  {"name": "検索ビューに、キーと操作の列も出す", "file": "apps/web/components/SearchView.tsx", "from": "columns.filter((c) => c.kind !== \"key\" && c.kind !== \"actions\")", "to": "columns.filter(() => true)", "tests": "apps/web/components/find.test.tsx"},
+  {"name": "検索結果の表示に、キーと操作の列も出す", "file": "apps/web/components/SearchView.tsx", "from": "columns.filter((c) => c.kind !== \"key\" && c.kind !== \"actions\")", "to": "columns.filter(() => true)", "tests": "apps/web/components/find.test.tsx"},
   {"name": "読めなかったリソースを知らせない", "file": "apps/web/components/SearchView.tsx", "from": "      {result && result.unreadable.length > 0 && (", "to": "      {false && result && (", "tests": "apps/web/components/find.test.tsx"},
   {"name": "--bom を付けても BOM を書かない", "file": "apps/cli/src/batch.ts", "from": "const text = `${opts.bom ? ", "to": "const text = `${false ? ", "tests": "apps/cli/src/batch.test.ts -t query"},
   {"name": "--group-by があっても、行を書き出す", "file": "apps/cli/src/batch.ts", "from": "    const table = request.groupBy ? \"groups\" : \"rows\";", "to": "    const table = \"rows\";", "tests": "apps/cli/src/batch.test.ts -t query"},

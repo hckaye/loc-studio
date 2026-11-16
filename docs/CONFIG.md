@@ -367,7 +367,7 @@ UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gol
 | ID | 内容 | options |
 | --- | --- | --- |
 | `builtin.db` | ホストの DB（共有 DB）の `cells(名前空間)` に値を置く。変更した時点で保存。版番号で競合を検出 | `namespace`（既定 `builtin.db`） |
-| `builtin.reviews` | レビューの投稿を `log(名前空間)` に追記する（書き換えも削除もしない）。セルの値は最新の投稿の判定。リンクは `名前空間 + ".links"` に置く。値を直接は保存できない | `namespace`（既定 `builtin.reviews`） |
+| `builtin.reviews` | レビューの投稿を `log(名前空間)` に追記する（書き換えも削除もしない）。セルの値は最新の投稿の判定で、その投稿のコメントと投稿者も表のセルに出る。リンクは `名前空間 + ".links"` に置く。値を直接は保存できない | `namespace`（既定 `builtin.reviews`） |
 
 `namespace` を変えると、同じ列ソースでも置き場所を分けられます。
 

@@ -40,7 +40,7 @@ function toPost(rec: LogRecord<ReviewRecordData>, links?: { label: string; url: 
 
 /**
  * レビュー列の出所。レビューは「列に対する投稿」で、ホストの DB のログに追記する（書き換えも削除もしない）。
- * セルの値は最新の投稿の判定。
+ * セルの値は最新の投稿の判定で、その投稿のコメントと投稿者も一緒に返す。
  */
 export const reviewSource: ColumnSource = {
   id: "builtin.reviews",
@@ -54,6 +54,8 @@ export const reviewSource: ColumnSource = {
       if (!rec) return;
       const value: CellValue = { ...cell, value: rec.data.verdict, updatedAt: rec.at, updatedBy: rec.by };
       if (rec.data.basisHash !== undefined) value.basisHash = rec.data.basisHash;
+      // 最新の投稿のコメント（表のセルに、投稿者と並べて出る）。
+      if (rec.data.comment !== "") value.comment = rec.data.comment;
       out.push(value);
     });
     return out;

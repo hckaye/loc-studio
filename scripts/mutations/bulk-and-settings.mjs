@@ -106,9 +106,9 @@ export default [
   { name: "行が対象のアクションがなくても、ボタンを出す", file: MENU, from: "  if (choices.length === 0) return null;\n", to: "", tests: MENU_TEST },
   { name: "条件の対象の言語（表示中の言語）を渡さない", file: MENU, from: "runOnMatches(api, choice, { ...filter, languages }, targets, {", to: "runOnMatches(api, choice, { ...filter, languages: [] }, targets, {", tests: MENU_TEST },
   { name: "絞り込みがなくても「絞り込みに合う」と出す", file: MENU, from: "  const what = filtering ? \"絞り込みに合う\" : \"すべての\";", to: "  const what = \"絞り込みに合う\";", tests: MENU_TEST },
-  { name: "検索ビューで、合う行のないリソースにも実行する", file: "apps/web/components/SearchView.tsx", from: "result.resources.filter((r) => r.matched > 0).map((r) => ({ resourceId: r.resourceId, path: r.path }))", to: "result.resources.map((r) => ({ resourceId: r.resourceId, path: r.path }))", tests: MENU_TEST },
-  { name: "検索ビューの一括アクションのあと、読み直さない", file: "apps/web/components/Studio.tsx", from: "                onChanged={refreshAll}\n", to: "", tests: MENU_TEST },
-  { name: "検索ビューを開いている間も、表の一括アクションを出す", file: "apps/web/components/Studio.tsx", from: "              resourceId && view === \"grid\" ? (\n                <MatchActions", to: "              resourceId ? (\n                <MatchActions", tests: MENU_TEST },
+  { name: "検索結果の表示で、合う行のないリソースにも実行する", file: "apps/web/components/SearchView.tsx", from: "result.resources.filter((r) => r.matched > 0).map((r) => ({ resourceId: r.resourceId, path: r.path }))", to: "result.resources.map((r) => ({ resourceId: r.resourceId, path: r.path }))", tests: MENU_TEST },
+  { name: "検索結果の表示の一括アクションのあと、読み直さない", file: "apps/web/components/Studio.tsx", from: "                onChanged={refreshAll}\n", to: "", tests: MENU_TEST },
+  { name: "検索結果の表示を開いている間も、表の一括アクションを出す", file: "apps/web/components/Studio.tsx", from: "              resourceId && view === \"grid\" ? (\n                <MatchActions", to: "              resourceId ? (\n                <MatchActions", tests: MENU_TEST },
   { name: "表の一括アクションのあと、表を読み直さない", file: "apps/web/components/Studio.tsx", from: "                  onDone={refreshAll}\n                  onJob={jobs.track}", to: "                  onDone={() => undefined}\n                  onJob={jobs.track}", tests: MENU_TEST },
   { name: "表の一括アクションに、絞り込みを渡さない", file: "apps/web/components/Studio.tsx", from: "                <MatchActions\n                  filter={rowFilter}", to: "                <MatchActions\n                  filter={{}}", tests: MENU_TEST },
   // ---- 画面: 設定の編集

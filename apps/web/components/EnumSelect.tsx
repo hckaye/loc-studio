@@ -116,7 +116,6 @@ export function EnumSelect({ options, value, onChoose, label, disabled, stale, i
           if (open) setOpen(false);
           else openList();
         }}
-        onDoubleClick={(e) => e.stopPropagation()}
       >
         <Chip option={current} fallback={value ?? "—"} {...(stale ? { stale } : {})} />
         <span className="enum-caret" aria-hidden="true">

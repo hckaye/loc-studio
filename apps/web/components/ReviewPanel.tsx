@@ -21,7 +21,7 @@ import {
 } from "@/lib/client/model";
 
 /*
- * レビューの投稿パネル。判定はレビュー列の選択肢から。requireComment の選択肢はコメント必須。
+ * レビューの投稿パネル。判定はレビュー列の選択肢から。requireComment の選択肢はコメント必須。投稿できたら閉じる。
  * 下にこれまでの投稿（変更あり、リンク、この時点の値との比較）と、レビュー先への手動の転載。
  */
 
@@ -95,12 +95,18 @@ export function ReviewPanel({ resourceId, rowKey, gc, initialVerdict, onClose, o
       });
       for (const w of res.warnings ?? []) push("warning", w);
       push("success", "レビューを投稿しました");
-      onPosted(rowKey, gc.cellId, { value: res.verdict, stale: false, updatedBy: res.userName, updatedAt: res.createdAt, ...(res.basisHash ? { basisHash: res.basisHash } : {}) });
-      setComment("");
-      loadPosts();
+      onPosted(rowKey, gc.cellId, {
+        value: res.verdict,
+        stale: false,
+        updatedBy: res.userName,
+        updatedAt: res.createdAt,
+        ...(res.comment !== "" ? { comment: res.comment } : {}),
+        ...(res.basisHash ? { basisHash: res.basisHash } : {}),
+      });
+      // 投稿できたら閉じる（結果は、表のセルの判定、コメント、投稿者に出る）。失敗したときは、入力を残して開いたままにする。
+      onClose();
     } catch (err) {
       reportError(err, "投稿できませんでした");
-    } finally {
       setBusy(false);
     }
   };

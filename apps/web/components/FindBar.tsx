@@ -18,7 +18,7 @@ import {
 
 /*
  * ツールバーの「条件」「お気に入り」「列」。
- * - 条件: 欄・言語・比べ方・値を選んで条件を組み立てる（式の書き方を知らなくてよい）。式を直接書くこともでき、そのときは補完が出る。
+ * - 条件: 「検索条件を設定」で、欄・言語・比べ方・値を選んで条件を作る（式の書き方を知らなくてよい）。「カスタムクエリ」で式を直接書くこともでき、そのときは補完が出る。
  * - お気に入り: いまの絞り込みと並べ替えに名前を付けて覚える（その PC に保存）。
  * - 列: 列ごとに表示するかを選ぶ。組み合わせに名前を付けて覚えられる。
  */
@@ -164,6 +164,12 @@ function QueryTextInput({ value, onChange, fields, info, onSubmit }: { value: st
     setResult(r.items.length > 0 ? r : null);
     setActive(0);
   };
+  // ↑↓ で選んだ候補が、一覧の見えている範囲の外にあれば、見えるところまで一覧をスクロールする。
+  const listRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!result) return;
+    listRef.current?.querySelector<HTMLElement>(`#query-suggestion-${active}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [active, result]);
   // 候補を入れたあと、カーソルを入れた文字の後ろに置く。
   useLayoutEffect(() => {
     if (caretRef.current === null || !inputRef.current) return;
@@ -232,7 +238,7 @@ function QueryTextInput({ value, onChange, fields, info, onSubmit }: { value: st
         }}
       />
       {result && (
-        <ul className="query-suggestions" id="query-suggestions" role="listbox" aria-label="入れられるもの">
+        <ul ref={listRef} className="query-suggestions" id="query-suggestions" role="listbox" aria-label="入れられるもの">
           {result.items.map((item, i) => (
             <li
               key={`${item.label}-${i}`}
@@ -324,13 +330,14 @@ export function QueryPanel({ info, where, builder, onApply, validate }: QueryPan
       {pop.open && (
         <div className="popover query-panel" role="dialog" aria-label="条件で絞り込む">
           <div className="seg" role="group" aria-label="条件の作り方">
-            <button type="button" className={`seg-btn${mode === "build" ? " on" : ""}`} aria-pressed={mode === "build"} onClick={() => (setMode("build"), setError(null))}>
-              選んで組み立てる
+            <button type="button" className={`seg-btn${mode === "build" ? " on" : ""}`} aria-pressed={mode === "build"} title="欄、言語、比べ方、値を選んで、検索の条件を作る" onClick={() => (setMode("build"), setError(null))}>
+              検索条件を設定
             </button>
             <button
               type="button"
               className={`seg-btn${mode === "text" ? " on" : ""}`}
               aria-pressed={mode === "text"}
+              title="条件を式（クエリ）で書く。かっこでまとめた条件や否定を書ける。入力に合わせて候補が出る"
               onClick={() => {
                 // 組み立てた条件があれば、その式から書き始められるようにする。
                 if (mode === "build" && built !== "") setText(built);
@@ -338,7 +345,7 @@ export function QueryPanel({ info, where, builder, onApply, validate }: QueryPan
                 setError(null);
               }}
             >
-              式で書く
+              カスタムクエリ
             </button>
           </div>
           {mode === "build" ? (
@@ -353,17 +360,19 @@ export function QueryPanel({ info, where, builder, onApply, validate }: QueryPan
                 </label>
               )}
               {state.conditions.length === 0 && <p className="muted small">条件がありません。「条件を足す」で始めます。</p>}
-              {state.conditions.map((c, i) => (
-                <ConditionRow
-                  key={i}
-                  cond={c}
-                  fields={fields}
-                  info={info}
-                  index={i}
-                  onChange={(next) => setCondition(i, next)}
-                  onRemove={() => setState((s) => ({ ...s, conditions: s.conditions.filter((_, j) => j !== i) }))}
-                />
-              ))}
+              <div className="query-conditions">
+                {state.conditions.map((c, i) => (
+                  <ConditionRow
+                    key={i}
+                    cond={c}
+                    fields={fields}
+                    info={info}
+                    index={i}
+                    onChange={(next) => setCondition(i, next)}
+                    onRemove={() => setState((s) => ({ ...s, conditions: s.conditions.filter((_, j) => j !== i) }))}
+                  />
+                ))}
+              </div>
               <button
                 type="button"
                 className="btn small"
@@ -460,7 +469,7 @@ export function FavoritesMenu({ favorites, onApply, onSave, onDelete }: Favorite
                 <button
                   type="button"
                   className="menu-item grow"
-                  title={`${f.view === "search" ? "プロジェクト全体の検索ビューで開く" : "いまのリソースに当てる"}${f.columns ? "（列と言語の表示も戻す）" : ""}`}
+                  title={`${f.view === "search" ? "プロジェクト全体の検索結果の表示で開く" : "いまのリソースに当てる"}${f.columns ? "（列と言語の表示も戻す）" : ""}`}
                   onClick={() => {
                     onApply(f);
                     pop.setOpen(false);

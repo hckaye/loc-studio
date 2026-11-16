@@ -117,6 +117,7 @@ export interface CellInfo {
   version?: number;
   updatedAt?: string;
   updatedBy?: string;
+  comment?: string;               // 列ソースが値に添えたコメント（レビュー列なら、最新の投稿のコメント。空なら付かない）
   stale?: boolean;                // basisHash が、対象の列のいまの値の版と違う（レビュー列、basis: "text" の列、生成列）
   needsRecheck?: boolean;         // 本文のみ: 最後に編集したあとで、基になる言語の本文が変わった
   issues?: IssueInfo[];           // 本文のみ
@@ -255,7 +256,7 @@ export class ApiError extends Error { code: "not-found" | "conflict" | "invalid"
 - `createProject(input, { localSettingsFile? }): { root, configFile, config, firstResource?, trusted }`: フォルダがなければ作り、`loc-studio.project.json` を書く。すでに設定ファイルのあるフォルダは `conflict` で、設定ファイルを変えない。入力の誤りは `invalid` で、フォルダも作らない。
   - `input.name`（必須）、`input.languages`（`{ id, label?, basedOn?, pinned? }` の配列。1 つ以上）。言語の ID は、半角の英数字で始まり、英数字と `-` `_` だけの 40 文字まで。`any` と `all`（条件式の語）は使えない。`label` が空なら ID を使う。
   - `input.statusColumn` / `input.reviewColumn`（既定は付ける）: 同梱の進捗の列とレビューの列を `columns` に書く。両方外すと `columns` を書かない（キーと本文だけになる）。
-  - `input.validators`（既定は付ける）: `validators` に `builtin.whitespace` と `builtin.untranslated` を書く。
+  - `input.whitespaceValidator` / `input.untranslatedValidator`（既定は付ける）: 同梱の空白の検証（`builtin.whitespace`）と未翻訳の検証（`builtin.untranslated`）を `validators` に書く。両方外すと `validators` を書かない。
   - `input.mapping`（`{ key?, text?, encoding? }`）: すでにある CSV / TSV の列の対応。既定（先頭の列がキー、言語 ID と同じ見出しが本文、文字コードは `auto`）と違うところがあるときだけ、`formats` に `builtin.csv` と `builtin.tsv` を同じ `options` で書く。同じ見出しを 2 つの役目に使うと `invalid`。
   - `input.firstResource`: 最初に作るリソースの場所。書き方（相対パス、`.csv` か `.tsv`）を確かめて返すだけで、作るのは呼び出し側が、開いたワークスペースの `createResource` で行う（フックとフォーマットを通すため）。
   - `localSettingsFile` を渡すと、書いた設定ファイルに基盤の項目（`formats`）があるとき、そのハッシュをローカル設定 `plugins.trust` に記録する（`trusted: true`）。記録するのは、いま書いた中身のハッシュだけ。

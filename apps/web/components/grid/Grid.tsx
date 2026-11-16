@@ -9,6 +9,7 @@ const MAX_COL_WIDTH = 1200;
 import type { RowPages } from "./useRowPages";
 import { actionsForColumn, CellContent, draftByOther, type CellHandlers } from "./cells";
 import { canEditCell, canRun } from "@/lib/client/permissions";
+import { clickSelection, isCellSelected, isRowSelected, moveSelection, singleSelection, type Selection } from "./selection";
 
 /*
  * 多言語の表。行と列の両方向を仮想化する。
@@ -27,15 +28,18 @@ export function rowHeightFor(density: number): number {
   return density * LINE_H + 12;
 }
 
-export interface Selection {
-  row: number;
-  col: number;
-  /** 複数行の選択の起点。 */
-  anchor: number;
-}
+export type { Selection } from "./selection";
 
-export function selectedRowRange(sel: Selection): [number, number] {
-  return [Math.min(sel.anchor, sel.row), Math.max(sel.anchor, sel.row)];
+/** セル（または行番号の欄）の上で、右クリックなどでメニューを開いた。 */
+export interface CellMenuRequest {
+  /** メニューを出す位置（画面の座標）。 */
+  x: number;
+  y: number;
+  rowIndex: number;
+  /** 押したセルの列。行番号の欄なら、いまのセルの列。 */
+  colIndex: number;
+  /** メニューを開いたときの選択（押したセルが選択の外なら、そのセルだけの選択）。 */
+  selection: Selection;
 }
 
 export interface GridProps extends Omit<CellHandlers, "onCancelEdit"> {
@@ -47,6 +51,12 @@ export interface GridProps extends Omit<CellHandlers, "onCancelEdit"> {
   selection: Selection;
   onSelectionChange(sel: Selection): void;
   onOpenEditor(rowIndex: number, gc: GridColumn): void;
+  /** セルや行番号の欄の右クリック（と、メニューキー、Shift+F10）。渡さなければ、ブラウザのメニューのまま。 */
+  onCellMenu?(request: CellMenuRequest): void;
+  /** キーのセルをダブルクリックした（キーの変更を始める）。 */
+  onRenameKey?(row: RowInfo): void;
+  /** レビュー列のセルをダブルクリックした（判定を選ばずに、投稿パネルを開く）。 */
+  onOpenReview(row: RowInfo, gc: GridColumn): void;
   onTogglePin(language: string, part?: "pinned" | "rest"): void;
   /** 列が対象のアクション（列見出しのメニュー）。 */
   columnActions?(gc: GridColumn): ActionInfo[];
@@ -219,7 +229,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
   const moveTo = (row: number, col: number, extend: boolean) => {
     const r = Math.max(0, Math.min(rows.total - 1, row));
     const c = Math.max(0, Math.min(effLayout.all.length - 1, col));
-    onSelectionChange({ row: r, col: c, anchor: extend ? selection.anchor : r });
+    onSelectionChange(moveSelection(selection, r, c, extend));
     rowVirtualizer.scrollToIndex(r, { align: "auto" });
     scrollColumnIntoView(c);
   };
@@ -255,11 +265,11 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         break;
       case "ArrowLeft":
         e.preventDefault();
-        moveTo(row, col - 1, false);
+        moveTo(row, col - 1, e.shiftKey);
         break;
       case "ArrowRight":
         e.preventDefault();
-        moveTo(row, col + 1, false);
+        moveTo(row, col + 1, e.shiftKey);
         break;
       case "PageDown":
         e.preventDefault();
@@ -298,6 +308,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         e.preventDefault();
         activate(row, col);
         break;
+      case "ContextMenu":
+      case "F10": {
+        // メニューキーと Shift+F10: いまのセルの位置に、右クリックと同じメニューを出す。
+        if (e.key === "F10" && !e.shiftKey) break;
+        if (!props.onCellMenu) break;
+        e.preventDefault();
+        const r = cellElement(row, col)?.getBoundingClientRect();
+        if (r) props.onCellMenu({ x: r.left + 12, y: r.bottom - 4, rowIndex: row, colIndex: col, selection });
+        break;
+      }
       case " ":
         if (effLayout.all[col]?.kind === "boolean") {
           e.preventDefault();
@@ -313,20 +333,46 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
     if (e.button !== 0) return;
     // ポータル（ドロップダウンのリスト）からの合成イベントは無視する
     if (!(e.currentTarget as HTMLElement).contains(e.target as Node)) return;
+    // Shift: 起点からの範囲。Ctrl（macOS は ⌘）: いまの選択に足す・外す。
     const extend = e.shiftKey;
-    onSelectionChange({ row: rowIndex, col: colIndex, anchor: extend ? selection.anchor : rowIndex });
-    if (extend) e.preventDefault();
+    const add = !extend && (e.ctrlKey || e.metaKey);
+    onSelectionChange(clickSelection(selection, rowIndex, colIndex, { shift: extend, ctrl: add }));
+    if (extend || add) e.preventDefault();
     // セルの中のボタンを押したときも、表がキー操作を受けられるようにする
     if (!(e.target as HTMLElement).closest("button, input, select, textarea")) {
       requestAnimationFrame(() => scrollRef.current?.focus({ preventScroll: true }));
     }
   };
 
+  /** 右クリック: 押したセルが選択の外なら、そのセルだけを選んでから、メニューを開く（選択の中なら、選択はそのまま）。 */
+  const onCellContextMenu = (e: React.MouseEvent, rowIndex: number, colIndex: number, wholeRow: boolean) => {
+    if (!props.onCellMenu) return;
+    // 入力欄の中では、ブラウザのメニュー（コピー、貼り付け）を使えるようにする。
+    if ((e.target as HTMLElement).closest("input, textarea")) return;
+    e.preventDefault();
+    const inside = wholeRow ? isRowSelected(selection, rowIndex) : isCellSelected(selection, rowIndex, colIndex);
+    const next = inside ? selection : singleSelection(rowIndex, colIndex);
+    if (!inside) onSelectionChange(next);
+    props.onCellMenu({ x: e.clientX, y: e.clientY, rowIndex, colIndex, selection: next });
+  };
+
+  /** ダブルクリック: 本文は編集モーダル、キーはキーの変更、レビュー列は投稿パネル、選択式はドロップダウン、文字と数値はその場で編集。 */
   const onCellDoubleClick = (rowIndex: number, colIndex: number) => {
     const gc = effLayout.all[colIndex];
     if (!gc) return;
     if (gc.kind === "text") props.onOpenEditor(rowIndex, gc);
     else if ((gc.kind === "string" || gc.kind === "number") && canEditCell(info, gc).ok) setEditing({ row: rowIndex, cellId: gc.cellId });
+    else if (gc.kind === "key") {
+      const row = rows.getRow(rowIndex);
+      if (row) props.onRenameKey?.(row);
+    } else if (gc.kind === "review") {
+      // 投稿できない人にも開く（これまでの投稿を読める。投稿のボタンは、パネルが理由つきで無効にする）。
+      const row = rows.getRow(rowIndex);
+      if (row) props.onOpenReview(row, gc);
+    } else if (gc.kind === "enum") {
+      // 選べない人のセルは、ボタンが無効なので何も起きない。独自描画のセルには、このボタンがない。
+      cellElement(rowIndex, colIndex)?.querySelector<HTMLElement>("button[data-cell-primary][aria-haspopup='listbox'][aria-expanded='false']")?.click();
+    }
   };
 
   const handlers: CellHandlers = useMemo(
@@ -390,11 +436,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
     props.onResize(gc.cellId, Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, next)));
   };
 
-  const [selLo, selHi] = selectedRowRange(selection);
   const frozenCount = effLayout.frozen.length;
   const firstVCol = vCols[0];
   const spacer = firstVCol ? firstVCol.start - scrollStart : 0;
   const totalW = GUTTER_WIDTH + effLayout.totalWidth;
+
+  /**
+   * 境目の左側（前の列の右端）にも置く、幅の取っ手。見出しのセルは中身を切り取るので、取っ手をセルの外にはみ出させられない。
+   * 境目の両側のセルに置いて、境目をまたいだ範囲のどこでもつかめるようにする。キーでの操作は、列の見出しの右端の取っ手が受ける。
+   */
+  const prevResizeHandle = (prev: GridColumn | undefined) =>
+    prev ? <span className="g-resize g-resize-prev" aria-hidden="true" data-resize={prev.cellId} onMouseDown={(e) => startResize(e, prev)} /> : null;
 
   const renderHeaderCell = (gc: GridColumn, colIndex: number, frozenLeft?: number) => {
     const label = gc.col.label ?? (gc.kind === "text" ? "本文" : gc.kind === "key" ? "キー" : columnLabel(gc.col));
@@ -427,11 +479,14 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         {props.columnActions && props.onColumnAction && (
           <ColumnMenu gc={gc} label={label} actions={props.columnActions(gc)} onRun={props.onColumnAction} disabledReason={canRun(info).reason} />
         )}
+        {prevResizeHandle(effLayout.all[colIndex - 1])}
         <span
           className="g-resize"
           role="separator"
           aria-orientation="vertical"
-          aria-label={`${label} の幅（左右の矢印キーで変える）`}
+          aria-label={`${label} の幅（ドラッグ、または左右の矢印キーで変える）`}
+          title="ドラッグで列の幅を変える"
+          data-resize={gc.cellId}
           aria-valuenow={gc.width}
           aria-valuemin={MIN_COL_WIDTH}
           aria-valuemax={MAX_COL_WIDTH}
@@ -444,8 +499,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
     );
   };
 
-  const renderGroupHeader = (g: GridLayout["groups"][number], style: React.CSSProperties, frozen: boolean, last: boolean) => (
+  // 言語の見出し（上の段）の境目でも、幅を変えられる。変わるのは、境目の左にあるグループの最後の列。
+  // 列が 1 つだけの言語では、目に入る境目がこの段なので、ここに取っ手がないと、幅を変えられないように見える。
+  const renderGroupHeader = (g: GridLayout["groups"][number], style: React.CSSProperties, frozen: boolean, last: boolean) => {
+    const order = effLayout.groups;
+    const prevGroup = order[order.indexOf(g) - 1];
+    const lastCol = g.columns[g.columns.length - 1];
+    return (
     <div key={g.id} className={`g-group${frozen ? " frozen" : ""}${last ? " frozen-last" : ""}${g.kind === "common" ? " common" : ""}`} style={style}>
+      {prevResizeHandle(prevGroup?.columns[prevGroup.columns.length - 1])}
+      {lastCol && <span className="g-resize" aria-hidden="true" title="ドラッグで列の幅を変える" data-resize={lastCol.cellId} onMouseDown={(e) => startResize(e, lastCol)} />}
       <span className="g-group-label" title={g.language ? `${g.label}（${g.language.id}）` : g.label}>
         {g.label}
         {g.language && <span className="g-group-id">{g.language.id}</span>}
@@ -485,7 +548,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         </span>
       )}
     </div>
-  );
+    );
+  };
 
   // 固定側のグループ見出し
   const frozenGroups = effLayout.groups.filter((g) => g.pinned);
@@ -543,7 +607,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         {rows.total === 0 && rows.loaded && <div className="grid-empty">{props.emptyMessage ?? "表示する行がありません"}</div>}
         {vRows.map((vr) => {
           const row = rows.getRow(vr.index);
-          const inSel = vr.index >= selLo && vr.index <= selHi;
+          const inSel = isRowSelected(selection, vr.index);
           return (
             <div
               key={vr.key}
@@ -559,6 +623,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
                 style={{ left: 0 }}
                 role="rowheader"
                 onMouseDown={(e) => onCellMouseDown(e, vr.index, selection.col)}
+                onContextMenu={(e) => onCellContextMenu(e, vr.index, selection.col, true)}
               >
                 {vr.index + 1}
               </div>
@@ -587,6 +652,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
 
   function renderCell(row: RowInfo, rowIndex: number, gc: GridColumn, colIndex: number, frozenLeft?: number) {
     const active = selection.row === rowIndex && selection.col === colIndex;
+    const selected = active || isCellSelected(selection, rowIndex, colIndex);
     const isEditing = editing !== null && editing.row === rowIndex && editing.cellId === gc.cellId;
     const cell = row.cells[gc.cellId];
     const cls = [
@@ -595,6 +661,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
       frozenLeft !== undefined ? "frozen" : "",
       colIndex === frozenCount - 1 ? "frozen-last" : "",
       active ? "active" : "",
+      selected ? "selected" : "",
       cell?.draft ? "unsaved" : "",
       gc.language && info.languages.find((l) => l.id === gc.language)?.editable === false ? "readonly-lang" : "",
     ]
@@ -612,7 +679,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         key={gc.cellId}
         id={active ? activeCellId : undefined}
         role="gridcell"
-        aria-selected={active}
+        aria-selected={selected}
         aria-colindex={colIndex + 2}
         data-col={colIndex}
         className={cls}
@@ -621,6 +688,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
         {...(lang?.hint?.lang ? { lang: lang.hint.lang } : {})}
         onMouseDown={(e) => onCellMouseDown(e, rowIndex, colIndex)}
         onDoubleClick={() => onCellDoubleClick(rowIndex, colIndex)}
+        onContextMenu={(e) => onCellContextMenu(e, rowIndex, colIndex, false)}
       >
         <CellContent info={info} row={row} gc={gc} editing={isEditing} handlers={handlers} actions={actionsByCell.get(gc.cellId) ?? EMPTY} {...(props.resourceId ? { resourceId: props.resourceId } : {})} />
       </div>

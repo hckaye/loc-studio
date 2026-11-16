@@ -289,12 +289,26 @@ try {
 
   console.log("== 行の追加・キーの変更・削除 ==");
   const selectRow = (i) => evaluate(`document.querySelector('[data-row="${i}"] .k-key').dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
-  const rowsMenu = async (re) => {
-    await click(`__t.button(/^行 ▾$/)`, "行のメニュー");
-    await click(`__t.all('[role="menuitem"]').find((b) => ${re}.test(b.textContent))`, `メニューの ${re}`);
+  // 本物のマウスの操作（右クリック、Ctrl / Shift を押しながらのクリック）。メニューや選択は、ブラウザのイベントの順で決まるため。
+  const MODS = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
+  const centerOf = (finder) => evaluate(`(() => { const el = ${finder}; if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.left + Math.min(r.width / 2, 40), y: r.top + r.height / 2 }; })()`);
+  const mouseClick = async (finder, { button = "left", modifiers = 0 } = {}) => {
+    const at = await centerOf(finder);
+    if (!at) throw new Error(`押す場所が見つかりません: ${finder}`);
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y, modifiers }, sessionId);
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: at.x, y: at.y, button, buttons: button === "right" ? 2 : 1, clickCount: 1, modifiers }, sessionId);
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button, buttons: 0, clickCount: 1, modifiers }, sessionId);
+  };
+  const cellMenu = `document.querySelector('[role="menu"][aria-label="セルと行の操作"]')`;
+  const menuItems = () => evaluate(`__t.all('[role="menuitem"]', ${cellMenu}).map((b) => b.querySelector("span").textContent)`);
+  const menuItem = (name) => `__t.all('[role="menuitem"]', ${cellMenu}).find((b) => b.querySelector("span").textContent === ${JSON.stringify(name)})`;
+  /** セルを右クリックして、メニューが出るのを待つ。 */
+  const rightClick = async (finder) => {
+    await mouseClick(finder, { button: "right" });
+    await until(`!!${cellMenu}`, "右クリックのメニューが出る");
   };
   await selectRow(0);
-  await rowsMenu("/行を追加/");
+  await click(`__t.button(/^＋ 行を追加$/)`, "＋ 行を追加");
   await until(`!!__t.all('[role="dialog"] input')[0]`, "行を追加のダイアログ");
   await evaluate(`__t.setValue(__t.all('[role="dialog"] input')[0], "UI_BROWSER"), true`);
   await click(`__t.button(/^追加する$/)`, "追加する");
@@ -304,8 +318,10 @@ try {
   await until(`__t.keys()[1] === "UI_BROWSER"`, "表に足した行が出る");
   check(true, "足した行が、表にも出る");
 
-  await selectRow(1);
-  await rowsMenu("/キーを変更/");
+  // キーの変更は、右クリックのメニューから（ダブルクリックでも開ける）。
+  await rightClick(`document.querySelector('[data-row="1"] .k-key')`);
+  check((await menuItems()).includes("キーを変更…"), "キーのセルの右クリックのメニューに、キーの変更がある", await menuItems());
+  await click(menuItem("キーを変更…"), "メニューの「キーを変更…」");
   await until(`__t.all('[role="dialog"] input')[0]?.value === "UI_BROWSER"`, "キーを変更のダイアログに、いまのキーが入っている");
   await evaluate(`__t.setValue(__t.all('[role="dialog"] input')[0], "UI_RENAMED"), true`);
   await click(`__t.button(/^変更する$/)`, "変更する");
@@ -314,7 +330,8 @@ try {
   check(true, "キーを変えると、リソースと表の両方が変わる");
 
   await selectRow(1);
-  await rowsMenu("/選択した行を削除/");
+  check((await evaluate(`__t.button(/^行を削除/).disabled`)) === false, "行を選ぶと、「行を削除」を押せる");
+  await click(`__t.button(/^行を削除/)`, "行を削除");
   await click(`__t.button(/^削除する$/)`, "削除する");
   await untilFile(() => !fileHas("UI_RENAMED"), "行が消える");
   await until(`__t.keys().join(",") === "UI_OK,UI_CANCEL,UI_SAVE_CONFIRM,UI_GOLD"`, "表から行が消える");
@@ -389,7 +406,7 @@ try {
   await until(`__t.all(".tree-row.resource").some((b) => /new\\.csv/.test(b.textContent))`, "ツリーに出る");
   check(true, "作ったリソースが、ツリーに出る");
 
-  console.log("== 条件で絞り込む、ツリーの件数、検索ビュー、列の表示、状態の復元 ==");
+  console.log("== 条件で絞り込む、ツリーの件数、検索結果の表示、列の表示、状態の復元 ==");
   const treeRow = (name) => `__t.all(".tree-row.resource").find((b) => /${name}/.test(b.textContent))`;
   const matchLabel = (name) => `${treeRow(name)}?.querySelector(".tree-match")?.getAttribute("aria-label")`;
   await click(treeRow("chapter01\\.csv"), "ツリーの chapter01.csv");
@@ -416,13 +433,37 @@ try {
   await click(`document.querySelector(".tree-match-head input[type=checkbox]")`, "該当ありだけ（解除）");
   await until(`!!(${treeRow("ui\\.csv")})`, "すべてのリソースが出る");
 
-  // 式で書く。入力に合わせて候補が出て、選んで入れられる。
+  // カスタムクエリ（式で書く）。入力に合わせて候補が出て、選んで入れられる。
   await click(`__t.button(/^条件/)`, "条件（2 回目）");
-  await click(`__t.button(/^式で書く$/)`, "式で書く");
+  await click(`__t.button(/^カスタムクエリ$/)`, "カスタムクエリ");
   await until(`__t.labeled("条件式")?.value === "text@ko is empty"`, "組み立てた条件の式から書き始められる");
-  check(true, "「式で書く」に切り替えると、組み立てた条件の式が入っている");
+  check(true, "「カスタムクエリ」に切り替えると、選んで作った条件の式が入っている");
   const typeQuery = (text) => evaluate(`(() => { const el = __t.labeled("条件式"); el.focus(); __t.setValue(el, ${JSON.stringify(text)}); el.setSelectionRange(el.value.length, el.value.length); return true; })()`);
   const suggestions = `__t.all("#query-suggestions [role=option] .mono").map((o) => o.textContent)`;
+  // 候補の一覧は、条件の窓に切り取られず、最後の候補まで選べる（一覧は窓の下にはみ出す位置に出る）。
+  await typeQuery("");
+  await until(`__t.all("#query-suggestions [role=option]").length > 5`, "欄の候補が並ぶ");
+  const listShown = await evaluate(`(() => {
+    const list = document.querySelector("#query-suggestions");
+    const r = list.getBoundingClientRect();
+    const hit = (y) => list.contains(document.elementFromPoint(r.left + 20, y));
+    return { top: hit(r.top + 4), bottom: hit(r.bottom - 4), inView: r.bottom <= window.innerHeight, height: Math.round(r.height) };
+  })()`);
+  check(listShown.top && listShown.bottom && listShown.inView, "式の候補の一覧は、条件の窓に切り取られずに、下の端まで出る", listShown);
+  const candidateCount = await evaluate(`__t.all("#query-suggestions [role=option]").length`);
+  for (let i = 0; i < candidateCount - 1; i++) await evaluate(`__t.labeled("条件式").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })), true`);
+  const lastCandidate = await evaluate(`(() => {
+    const list = document.querySelector("#query-suggestions");
+    const items = [...list.querySelectorAll("[role=option]")];
+    const active = list.querySelector('[aria-selected="true"]');
+    const r = active.getBoundingClientRect();
+    const lr = list.getBoundingClientRect();
+    return { count: items.length, isLast: active === items[items.length - 1], inside: r.top >= lr.top - 1 && r.bottom <= lr.bottom + 1, hit: active.contains(document.elementFromPoint(r.left + 20, r.top + r.height / 2)), label: active.querySelector(".mono").textContent };
+  })()`);
+  check(lastCandidate.isLast && lastCandidate.inside && lastCandidate.hit, "↓ で最後の候補まで進むと、その候補が見える位置に出ていて、押せる", lastCandidate);
+  await evaluate(`document.querySelector('#query-suggestions [aria-selected="true"]').dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })), true`);
+  await until(`__t.labeled("条件式").value.startsWith(${JSON.stringify(lastCandidate.label)})`, "最後の候補が入る");
+  check(true, "最後の候補も、押して入れられる");
   await typeQuery("text@ko is empty or iss");
   await until(`${suggestions}.join(",") === "issues@,issueCode@"`, "欄の候補が出る");
   check(true, "欄を書く場所で、入力に合う欄の候補が出る（issues@、issueCode@）");
@@ -452,12 +493,12 @@ try {
   check(true, "いまの条件を、名前を付けてお気に入りに保存できる");
   await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
 
-  // 検索ビュー: プロジェクト全体の結果、集計、CSV への書き出し、行へ移る。
+  // 検索結果の表示: プロジェクト全体の結果、集計、CSV への書き出し、行へ移る。
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: path.join(tmp, "downloads") });
-  await click(`__t.button(/^検索ビュー$/)`, "検索ビュー");
-  const view = `document.querySelector('[role="region"][aria-label="検索ビュー"]')`;
-  await until(`(${view}?.querySelector(".search-view-summary")?.textContent ?? "").startsWith("2 行（全 12 行のうち。1 / 3 個のリソース）")`, "検索ビューに件数が出る");
-  check(true, "検索ビューに、プロジェクト全体で条件に合う行の数が出る（2 行、3 個のリソースのうち 1 個）");
+  await click(`__t.button(/^全体$/)`, "検索の範囲を「全体」にする");
+  const view = `document.querySelector('[role="region"][aria-label="検索結果の表示"]')`;
+  await until(`(${view}?.querySelector(".search-view-summary")?.textContent ?? "").startsWith("2 行（全 12 行のうち。1 / 3 個のリソース）")`, "検索結果の表示に件数が出る");
+  check(true, "検索結果の表示に、プロジェクト全体で条件に合う行の数が出る（2 行、3 個のリソースのうち 1 個）");
   const resultKeys = `__t.all('table[aria-label="結果の表"] tbody tr.search-row').map((r) => r.children[1].textContent)`;
   check((await evaluate(`${resultKeys}.join(",")`)) === "CH01_CHOICE_001A,CH01_CHOICE_001B", "結果の表に、条件に合う行が並ぶ", await evaluate(resultKeys));
   await evaluate(`__t.select(__t.labeled("集計の区切り"), "issues@ko"), true`);
@@ -476,7 +517,7 @@ try {
     evaluate(`fetch("/api/rpc/${method}", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: ${JSON.stringify(params)} }) }).then((r) => r.json()).then((b) => b.result ?? null)`);
   const koStatus = async (key) => (await rpc("rowDetail", { resourceId: "Assets/Text/chapter01.csv", key }))?.row?.cells?.["textStatus@ko"]?.value;
   check((await koStatus("CH01_CHOICE_001A")) === "todo" && (await koStatus("CH01_INTRO_001")) === "todo", "（前提）アクションの前は、韓国語のステータスが「未着手」");
-  await click(`__t.button(/^一括アクション ▾$/, ${view})`, "検索ビューの一括アクション");
+  await click(`__t.button(/^一括アクション ▾$/, ${view})`, "検索結果の表示の一括アクション");
   await click(`__t.all('[role="menuitem"]', ${view}).find((b) => b.textContent.trim() === "作業中にする")`, "作業中にする");
   const bulkDialog = `__t.dialog(/^一括アクション: 作業中にする$/)`;
   await until(`(${bulkDialog}?.textContent ?? "").includes("プロジェクト全体の、絞り込みに合う 2 行に実行します")`, "確かめる窓に、対象の行数が出る");
@@ -618,6 +659,230 @@ try {
     check(true, "設定を変えたあとも、表はそのまま使える（絞り込みも残る）");
   }
 
+  console.log("== ツールバーのまとまり、列の幅のドラッグ、レビューの投稿 ==");
+  {
+    // ---- ツールバー: 役目ごとのまとまりと、絞り込みの解除
+    const groups = await evaluate(`__t.all('[role="toolbar"] > .tb-row > [role="group"]').map((g) => g.getAttribute("aria-label"))`);
+    check(
+      JSON.stringify(groups) === JSON.stringify(["検索と条件", "列の値で絞り込む", "行の状態で絞り込む", "行とリソースの操作", "表示", "保存"]),
+      "ツールバーは、役目ごとのまとまり（検索、列の値、行の状態、操作、表示、保存）に分かれている",
+      groups,
+    );
+    const captions = await evaluate(`__t.all('[role="toolbar"] .tb-caption').filter((c) => c.getBoundingClientRect().width > 0).map((c) => c.textContent.trim())`);
+    check(JSON.stringify(captions) === JSON.stringify(["検索", "列の値で絞り込む", "行の状態で絞り込む", "操作", "表示"]), "まとまりの見出しが、画面に出ている", captions);
+    const clearButton = `__t.button(/^絞り込みを解除（\\d+）$/)`;
+    check((await evaluate(`!!${clearButton}`)) === true, "絞り込んでいる間は、「絞り込みを解除」が出る");
+    await click(clearButton, "絞り込みを解除");
+    await until(`!${clearButton} && __t.keys().length > 2`, "絞り込みが外れて、行が増える");
+    check(true, "「絞り込みを解除」で、絞り込みがまとめて外れる");
+
+    // ---- 探す範囲の切り替え（専用の検索の窓はない）、設定のボタン、キーのセルのダブルクリック
+    const scopeButton = (name) => `__t.all('[role="group"][aria-label="探す範囲"] button').find((b) => b.textContent.trim() === ${JSON.stringify(name)})`;
+    const resultsView = `document.querySelector('[role="region"][aria-label="検索結果の表示"]')`;
+    check((await evaluate(`!__t.button(/横断検索/)`)) === true, "上のバーに、専用の検索のボタンはない");
+    check((await evaluate(`${scopeButton("このファイル")}?.getAttribute("aria-pressed")`)) === "true", "探す範囲は、最初は「このファイル」");
+    await click(scopeButton("全体"), "探す範囲を「全体」にする");
+    await until(`!!${resultsView} && !document.querySelector('[role="grid"]')`, "表の代わりに、プロジェクト全体の検索結果が出る");
+    check((await evaluate(`document.querySelector('[role="toolbar"] input[type="search"]').placeholder`)) === "キーと本文を検索（プロジェクト全体）", "範囲を「全体」にすると、検索欄の説明も「プロジェクト全体」になる");
+    await click(scopeButton("このファイル"), "探す範囲を「このファイル」に戻す");
+    await until(`!${resultsView} && !!document.querySelector('[role="grid"]') && __t.keys().length > 0`, "開いているファイルの表に戻る");
+    check(true, "探す範囲の「全体」でプロジェクト全体の検索結果が出て、「このファイル」で表に戻る");
+    check((await evaluate(`__t.button(/^設定$/).textContent.replace(/\\s+/g, " ").trim()`)) === "⚙ 設定", "右上の設定のボタンは、「設定」と文字で出ている");
+    const firstKey = await evaluate(`__t.keys()[0]`);
+    await evaluate(`document.querySelector('[data-row="0"] .k-key').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })), true`);
+    await until(`!!__t.dialog(/^キーを変更$/)`, "キーのセルのダブルクリックで、キーの変更の窓が開く");
+    check((await evaluate(`__t.dialog(/^キーを変更$/).querySelector("input").value`)) === firstKey, "キーの変更の窓に、その行のキーが入っている", firstKey);
+    await click(`__t.labeled("閉じる", __t.dialog(/^キーを変更$/))`, "キーの変更を閉じる");
+    await until(`!__t.dialog(/^キーを変更$/)`, "窓が閉じる");
+
+    // ---- 列の幅: 本物のマウスの操作でドラッグする（境目のどこをつかめるかは、画面の重なりで決まるため）
+    const mouse = (type, x, y, buttons) => send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 }, sessionId);
+    const widthOf = (cellId) => evaluate(`__t.all(".g-hcell").find((c) => c.title.endsWith("（" + ${JSON.stringify(cellId)} + "）"))?.getBoundingClientRect().width ?? null`);
+    /** 取っ手の中央をつかんで dx だけ動かす。つかんだ点にあるのが取っ手そのものかと、幅を変える列を返す。 */
+    const dragHandle = async (finder, dx) => {
+      const at = await evaluate(`(() => {
+        const handle = ${finder};
+        if (!handle) return null;
+        const r = handle.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        return { x, y, target: handle.dataset.resize, onTop: document.elementFromPoint(x, y) === handle };
+      })()`);
+      if (!at) return null;
+      await mouse("mouseMoved", at.x, at.y, 0);
+      await mouse("mousePressed", at.x, at.y, 1);
+      for (let i = 1; i <= 5; i++) await mouse("mouseMoved", at.x + (dx * i) / 5, at.y, 1);
+      await mouse("mouseReleased", at.x + dx, at.y, 0);
+      return at;
+    };
+    const firstLanguage = `__t.all(".g-group").find((g) => g.querySelector(".g-group-tools"))`;
+    const groupEdge = `${firstLanguage}?.querySelector(".g-resize:not(.g-resize-prev)")`;
+    /** 取っ手を dx だけドラッグして、対象の列の幅が dx だけ変わることを確かめ、元の幅に戻す。 */
+    const resizes = async (finder, label) => {
+      const target = await evaluate(`${finder}?.dataset.resize ?? null`);
+      const before = target === null ? null : await widthOf(target);
+      const at = await dragHandle(finder, 30);
+      const after = target === null ? null : await widthOf(target);
+      check(at?.onTop === true && before !== null && after === before + 30, label, { target, before, after, onTop: at?.onTop });
+      // ドラッグのあとで取っ手の位置が変わるので、もう一度つかんで戻す。
+      await dragHandle(finder, -30);
+      const restored = target === null ? null : await widthOf(target);
+      check(restored === before, `${label}（逆向きにドラッグすると、元の幅に戻る）`, { before, restored });
+      return target;
+    };
+    const lastOfGroup = await resizes(groupEdge, "言語の見出しの境目をドラッグすると、その言語の最後の列の幅が変わる");
+    await resizes(`__t.all(".g-hcell").find((c) => c.title.endsWith("（" + ${JSON.stringify(lastOfGroup)} + "）"))?.querySelector(".g-resize:not(.g-resize-prev)")`, "列の見出しの右端をドラッグすると、その列の幅が変わる");
+    // 列を本文だけにする（言語ごとの列が 1 つだけになる）。
+    await click(`__t.button(/^表示する列を選ぶ/)`, "列");
+    await until(`!!document.querySelector(".columns-panel")`, "列のメニュー");
+    for (;;) {
+      const more = await evaluate(`(() => {
+        const label = __t.all(".columns-panel fieldset label").find((l) => { const i = l.querySelector("input"); return !i.disabled && i.checked && !/^本文/.test(l.textContent.trim()); });
+        if (!label) return false;
+        label.querySelector("input").click();
+        return true;
+      })()`);
+      if (!more) break;
+      await sleep(50);
+    }
+    await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+    await until(`${groupEdge}?.dataset.resize?.startsWith("text@") && __t.all(".g-hcell").every((c) => /^(キー|本文)（/.test(c.title))`, "言語ごとの列が、本文だけになる");
+    const single = await resizes(groupEdge, "列を本文だけにした言語でも、言語の見出しの境目をドラッグすると、本文の幅が変わる");
+    const textHeader = `__t.all(".g-hcell").find((c) => c.title.endsWith("（" + ${JSON.stringify(single)} + "）"))`;
+    await resizes(`${textHeader}?.querySelector(".g-resize:not(.g-resize-prev)")`, "列を本文だけにした言語でも、列の見出しの右端をドラッグすると、本文の幅が変わる");
+    // 横にスクロールしていると、固定していない列の左端は固定した列の下に隠れるので、左端まで戻してから確かめる。
+    await evaluate(`(document.querySelector(".grid-scroll").scrollLeft = 0), true`);
+    await until(`document.querySelector(".grid-scroll").scrollLeft === 0 && !!${textHeader}?.nextElementSibling?.querySelector(".g-resize-prev")`, "表を左端まで戻す");
+    await sleep(200);
+    await resizes(`${textHeader}?.nextElementSibling?.querySelector(".g-resize-prev")`, "境目の右隣の見出しの左端をつかんでも、境目の左の列（本文）の幅が変わる");
+    await click(`__t.button(/^表示する列を選ぶ/)`, "列");
+    await click(`__t.button(/^すべて表示$/)`, "すべて表示");
+    await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+    await until(`__t.all('[data-row="0"] .k-review').length > 0`, "列が戻る");
+
+    // ---- レビュー: セルのダブルクリックで投稿パネルを開き、投稿すると閉じて、セルにコメントと投稿者が出る
+    const reviewCell = `__t.all('[data-row="0"] .k-review')[0]`;
+    const reviewDialog = `__t.dialog(/^レビュー: /)`;
+    const me = (await evaluate(`fetch("/api/rpc/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json())`)).result.user.name;
+    check((await evaluate(`${reviewCell}.querySelector(".review-note")`)) === null, "投稿のないレビューのセルには、コメントが出ていない");
+    await evaluate(`${reviewCell}.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })), true`);
+    await until(`!!${reviewDialog}`, "レビューのセルのダブルクリックで、投稿パネルが開く");
+    check((await evaluate(`__t.all('input[type="radio"]', ${reviewDialog}).every((r) => !r.checked)`)) === true, "ダブルクリックで開いたパネルは、判定を選んでいない状態");
+    await click(`__t.all('input[type="radio"]', ${reviewDialog}).find((r) => /差し戻し/.test(r.closest("label").textContent))`, "差し戻し");
+    await until(`__t.button(/^投稿$/, ${reviewDialog}).disabled === true`, "コメントがないと投稿できない");
+    await evaluate(`__t.setValue(${reviewDialog}.querySelector("textarea"), "語尾をそろえてください"), true`);
+    await click(`__t.button(/^投稿$/, ${reviewDialog})`, "投稿");
+    await until(`!${reviewDialog}`, "投稿すると、パネルが閉じる");
+    check(true, "レビューを投稿すると、パネルが閉じる");
+    const noteOf = () => evaluate(`(() => { const c = ${reviewCell}; return { verdict: c.querySelector(".chip-label")?.textContent, by: c.querySelector(".review-note-by")?.textContent ?? null, text: c.querySelector(".review-note-text")?.textContent ?? null, visible: (c.querySelector(".review-note")?.getBoundingClientRect().width ?? 0) > 0 }; })()`);
+    await until(`!!${reviewCell}.querySelector(".review-note-text")`, "セルにコメントが出る");
+    const posted = await noteOf();
+    check(posted.verdict === "差し戻し" && posted.by === me && posted.text === "語尾をそろえてください" && posted.visible, "投稿のあと、セルに判定、投稿者、コメントが出る", posted);
+    // 読み直しても、サーバーが返す行に同じ内容が入っている（画面が投稿の結果を持っているだけではない）。
+    await click(`__t.button(/^再読み込み$/)`, "再読み込み");
+    await until(`__t.toasts().some((t) => /読み直しました|再読み込み/.test(t)) || true`, "読み直す");
+    await sleep(500);
+    await until(`!!${reviewCell}?.querySelector(".review-note-text")`, "読み直したあとも、コメントが出る");
+    const reloaded = await noteOf();
+    check(reloaded.by === me && reloaded.text === "語尾をそろえてください", "リソースを読み直しても、セルに投稿者とコメントが出る", reloaded);
+  }
+
+  console.log("== 複数選択と、右クリックのメニュー ==");
+  {
+    // 選択は、セルへの mousedown（Shift / Ctrl つき）で作る。メニューは、本物の右クリックで開く。
+    const down = (finder, mods = {}) => evaluate(`${finder}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, shiftKey: ${mods.shift === true}, ctrlKey: ${mods.ctrl === true} })), true`);
+    const cellAt = (row, selector, nth = 0) => `__t.all('[data-row="${row}"] ${selector}')[${nth}]`;
+    const statusText = `document.querySelector(".statusbar").textContent`;
+    const closeMenu = async () => {
+      await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+      await until(`!${cellMenu}`, "メニューが閉じる");
+    };
+    const toastWith = (text) => `__t.toasts().some((t) => t.includes(${JSON.stringify(text)}))`;
+    await evaluate(`(document.querySelector(".grid-scroll").scrollLeft = 0), true`);
+
+    // ---- Shift で範囲、Ctrl で離れたセル
+    await down(cellAt(0, ".k-text"));
+    await down(cellAt(1, ".k-text"), { shift: true });
+    await until(`(${statusText}).includes("2 行・2 セルを選択")`, "Shift で 2 つのセルを選ぶ");
+    await down(cellAt(3, ".k-text"), { ctrl: true });
+    await until(`(${statusText}).includes("3 行・3 セルを選択")`, "Ctrl で離れたセルを足す");
+    const picked = await evaluate(`[0, 1, 2, 3].map((r) => ${cellAt("' + r + '", ".k-text")}.getAttribute("aria-selected"))`);
+    check(JSON.stringify(picked) === JSON.stringify(["true", "true", "false", "true"]), "Shift で起点からの範囲を、Ctrl で離れたセルを選べる（選んでいない行は選ばれない）", picked);
+    check((await evaluate(`__t.button(/^行を削除/).textContent.trim()`)) === "行を削除（3）", "ツールバーの「行を削除」に、選んでいる行の数が出る");
+
+    // ---- 右クリックのメニュー: 選択の中のセルを押すと、選択はそのまま
+    const pickedKeys = await evaluate(`[0, 1, 3].map((r) => __t.keys()[r])`);
+    await rightClick(cellAt(1, ".k-text"));
+    const textMenu = await menuItems();
+    check((await evaluate(statusText)).includes("3 行・3 セルを選択"), "選択の中のセルを右クリックしても、選択は変わらない");
+    check(
+      ["コピー（3 セル）", "貼り付け（3 件）", "＋ 行を追加…", "行を削除…（3 行）", "選択を解除"].every((n) => textMenu.includes(n)) && !textMenu.includes("キーを変更…"),
+      "メニューに、コピー、貼り付け、行の追加と削除、選択の解除が、対象の数つきで並ぶ（複数の行では、キーの変更は出ない）",
+      textMenu,
+    );
+    // プラグインが足したアクション（check.mark。行が対象）が、メニューに並ぶ。
+    check(textMenu.includes("作業中にする"), "プラグインのアクション（行が対象）が、右クリックのメニューに並ぶ", textMenu);
+    await click(menuItem("作業中にする"), "メニューのアクション");
+    await until(toastWith("作業中にする: 3 件を更新しました"), "アクションが、選んでいる 3 行に実行される");
+    check(true, "メニューからアクションを実行すると、選んでいる行すべてが対象になる（3 件を更新）");
+
+    // ---- 行の削除: 選んでいる行のキーを見せて確かめる（ここでは消さずにやめる）
+    await down(cellAt(0, ".k-text"));
+    await down(cellAt(1, ".k-text"), { shift: true });
+    await down(cellAt(3, ".k-text"), { ctrl: true });
+    await rightClick(cellAt(3, ".k-text"));
+    await click(menuItem("行を削除…（3 行）"), "メニューの「行を削除…」");
+    await until(`!!__t.dialog(/^行を削除$/)`, "削除の確認が出る");
+    check((await evaluate(`__t.dialog(/^行を削除$/).textContent`)).includes(pickedKeys.join("、")), "削除の確認に、選んでいる行のキーが並ぶ", pickedKeys);
+    await click(`__t.button(/^やめる$/, __t.dialog(/^行を削除$/))`, "やめる");
+    await until(`!__t.dialog(/^行を削除$/)`, "確認が閉じる");
+    check((await evaluate(`__t.keys().length`)) >= 4, "やめると、行は消えない");
+
+    // ---- 選択式の列の値を、まとめて変える
+    await down(cellAt(1, ".k-enum"));
+    await down(cellAt(2, ".k-enum"), { shift: true });
+    await rightClick(cellAt(2, ".k-enum"));
+    const enumHead = await evaluate(`__t.all(".context-menu-head", ${cellMenu}).map((h) => h.textContent)`);
+    check(enumHead.some((h) => /を変える（2 件）$/.test(h)), "選択式の列のメニューに、値を変える項目が、対象の数つきで並ぶ", enumHead);
+    await click(menuItem("「未着手」にする"), "「未着手」にする");
+    await until(toastWith("を「未着手」にしました"), "まとめて変えたことを知らせる");
+    await until(`[1, 2].every((r) => ${cellAt("' + r + '", ".k-enum")}.textContent.trim().startsWith("未着手"))`, "選んだ 2 つのセルが変わる");
+    check(true, "メニューから値を選ぶと、選んだセルがまとめて変わり、変えた数を知らせる");
+
+    // ---- コピーと貼り付け（クリップボードの権限を与えて、本物のクリップボードで確かめる）
+    await send("Browser.grantPermissions", { permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"], origin: new URL(base).origin });
+    const firstTexts = await evaluate(`[0, 1].map((r) => ${cellAt("' + r + '", ".k-text")}.querySelector(".cell-text").textContent)`);
+    await down(cellAt(0, ".k-text"));
+    await down(cellAt(1, ".k-text"), { shift: true });
+    await rightClick(cellAt(0, ".k-text"));
+    await click(menuItem("コピー（2 セル）"), "コピー");
+    await until(toastWith("2 セルをコピーしました"), "コピーしたことを知らせる");
+    // Windows のクリップボードは、読むときに改行を CRLF にするので、LF にそろえて比べる。
+    const copied = (await evaluate(`navigator.clipboard.readText()`)).replace(/\r\n/g, "\n");
+    check(copied === firstTexts.join("\n"), "コピーすると、選んだセルの本文が、行ごとにクリップボードに入る", { copied, firstTexts });
+    await evaluate(`navigator.clipboard.writeText("貼り付けた本文").then(() => true)`);
+    await rightClick(cellAt(1, ".k-text"));
+    await click(menuItem("貼り付け（2 件）"), "貼り付け");
+    await until(toastWith("2 件に貼り付けました"), "貼り付けたことを知らせる");
+    await until(`[0, 1].every((r) => ${cellAt("' + r + '", ".k-text")}.querySelector(".cell-text").textContent === "貼り付けた本文")`, "選んだ 2 つのセルに、貼り付けた本文が入る");
+    check((await evaluate(`[0, 1].every((r) => ${cellAt("' + r + '", ".k-text")}.classList.contains("unsaved"))`)) === true, "貼り付けた本文は、未保存の変更になる（保存するまで、ファイルには書かない）");
+
+    // ---- レビューの一括の投稿
+    await down(cellAt(0, ".k-review"));
+    await down(cellAt(1, ".k-review"), { shift: true });
+    await rightClick(cellAt(1, ".k-review"));
+    await click(menuItem("レビューを一括で投稿…（2 件）"), "レビューを一括で投稿…");
+    const bulkDialog = `__t.dialog(/^レビューを一括で投稿: /)`;
+    await until(`!!${bulkDialog}`, "一括の投稿の窓が開く");
+    await click(`__t.all('input[type="radio"]', ${bulkDialog}).find((r) => /差し戻し/.test(r.closest("label").textContent))`, "差し戻し");
+    await evaluate(`__t.setValue(${bulkDialog}.querySelector("textarea"), "用語をそろえてください"), true`);
+    await click(`__t.button(/^2 件に投稿$/, ${bulkDialog})`, "2 件に投稿");
+    await until(`!${bulkDialog}`, "すべて投稿できると、窓が閉じる");
+    await until(`[0, 1].every((r) => ${cellAt("' + r + '", ".k-review")}.querySelector(".review-note-text")?.textContent === "用語をそろえてください")`, "選んだ 2 つのセルに、コメントが出る");
+    check(true, "レビューを一括で投稿すると、選んだセルすべてに同じ判定とコメントが入り、窓が閉じる");
+    await closeMenu().catch(() => {});
+  }
+
   const errors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);
   check(errors.length === 0, "操作の途中で、失敗の通知は出ていない", errors);
 
@@ -690,8 +955,8 @@ try {
     await until(`(document.querySelector(".grid-empty")?.textContent ?? "").includes("まだ行がありません")`, "行の足し方の案内が出る");
     check(true, "行のないファイルでは、行の足し方を案内する");
     // そのまま行を足して、本文を書いて保存できる。
-    await click(`__t.button(/^行 ▾$/)`, "行のメニュー");
-    await click(`__t.all('[role="menuitem"]').find((b) => /行を追加/.test(b.textContent))`, "行を追加…");
+    check((await evaluate(`__t.button(/^行を削除/).disabled`)) === true, "行のないファイルでは、「行を削除」は押せない");
+    await click(`__t.button(/^＋ 行を追加$/)`, "＋ 行を追加");
     await until(`!!__t.all('[role="dialog"] input')[0]`, "行を追加のダイアログ");
     await evaluate(`__t.setValue(__t.all('[role="dialog"] input')[0], "TITLE"), true`);
     await click(`__t.button(/^追加する$/)`, "追加する");
@@ -733,6 +998,11 @@ try {
     check((await evaluate(`[...document.querySelector("#new-project-key").options].map((o) => o.value).join(",")`)) === "Note,ID,JP,EN", "ファイルの見出しが、キーの列の候補に出る");
     check((await evaluate(`${enSelect}.value`)) === "EN", "言語の ID と同じ見出しは、最初から選ばれている");
     await evaluate(`(__t.select(document.querySelector("#new-project-key"), "ID"), __t.select(${jaSelect}, "JP"), true)`);
+    // 検証は 1 つずつ選べる。未翻訳の検証だけを外す。
+    const validatorCheck = (re) => `__t.all("label.check").find((l) => ${re}.test(l.textContent))?.querySelector("input")`;
+    check((await evaluate(`[${validatorCheck("/空白の検証を付ける/")}?.checked, ${validatorCheck("/未翻訳の検証を付ける/")}?.checked]`)).join(",") === "true,true", "空白の検証と未翻訳の検証は、別々のチェックで、最初はどちらも付いている");
+    await click(validatorCheck("/未翻訳の検証を付ける/"), "未翻訳の検証を付ける");
+    await until(`${validatorCheck("/未翻訳の検証を付ける/")}.checked === false && ${validatorCheck("/空白の検証を付ける/")}.checked === true`, "未翻訳の検証だけが外れる");
     await click(`__t.button(/^プロジェクトを作る$/)`, "プロジェクトを作る");
     await until(`__t.keys()[0] === "OK"`, "すでにあるファイルの行が出る", 60_000);
     check((await evaluate(noDialog)) === true, "列を対応させたプロジェクトも、信頼の確認なしで開く");
@@ -748,6 +1018,8 @@ try {
       "設定ファイルに、選んだ列の対応が書かれる",
       formats,
     );
+    const existingValidators = readJson(path.join(existing, "loc-studio.project.json")).validators;
+    check(JSON.stringify(existingValidators) === JSON.stringify(["builtin.whitespace"]), "未翻訳の検証を外して作ると、設定ファイルの validators は空白の検証だけになる", existingValidators);
     check(readFileSync(path.join(existing, "Text", "ui.csv"), "utf8") === existingCsv, "すでにあるファイルは、作成では変えない");
 
     // ---- すでにプロジェクトのあるフォルダには作れない
@@ -794,8 +1066,12 @@ try {
   check((await evaluate(`__t.all(".badge").some((b) => b.textContent.trim().startsWith("LQA"))`)) === true, "上のバーに、役割の表示名（設定の label）が出る");
   const REASON = "この列は、あなたの役割では変更できません";
   check((await evaluate(`document.querySelector('[data-row="0"] .k-text').title`)) === REASON, "役割で変えられない列（本文）は、理由つきで変えられない");
-  const rowsBtn = await evaluate(`(() => { const b = __t.button(/^行 ▾$/); return [b.disabled, b.title]; })()`);
-  check(rowsBtn[0] === true && rowsBtn[1] === "行の追加・削除とリソースの作成は、あなたの役割ではできません", "行の操作は、理由つきで無効", rowsBtn);
+  const rowsBtn = await evaluate(`[__t.button(/^＋ 行を追加$/), __t.button(/^行を削除/)].flatMap((b) => [b.disabled, b.title])`);
+  check(
+    JSON.stringify(rowsBtn) === JSON.stringify([true, "行の追加・削除とリソースの作成は、あなたの役割ではできません", true, "行の追加・削除とリソースの作成は、あなたの役割ではできません"]),
+    "行の操作（追加と削除）は、理由つきで無効",
+    rowsBtn,
+  );
   check((await evaluate(`__t.button(/^リソースを作成$/).disabled`)) === true, "リソースの作成も無効");
   // 変えられる列（ステータス）は、選んで保存できる。
   await click(`__t.all('[data-row="0"] .k-enum button')[0]`, "ステータスのセル");

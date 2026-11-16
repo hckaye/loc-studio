@@ -79,8 +79,10 @@ export interface NewProjectInput {
   statusColumn?: boolean;
   /** レビューの列（同梱の builtin.reviewStatus）を付ける。既定は付ける。 */
   reviewColumn?: boolean;
-  /** 同梱の検証（空白、未翻訳）を付ける。既定は付ける。 */
-  validators?: boolean;
+  /** 同梱の空白の検証（builtin.whitespace）を付ける。既定は付ける。 */
+  whitespaceValidator?: boolean;
+  /** 同梱の未翻訳の検証（builtin.untranslated）を付ける。既定は付ける。 */
+  untranslatedValidator?: boolean;
   /** すでにある CSV / TSV の列の対応。 */
   mapping?: NewProjectMapping;
   /** 最初に作るリソースの場所（確かめるだけ。作るのは呼び出し側が createResource で行う）。 */
@@ -294,7 +296,11 @@ export function buildProjectConfig(input: NewProjectInput): Record<string, unkno
       ...(review ? [{ use: "builtin.reviewStatus", id: "reviewStatus", of: "text" }] : []),
     ];
   }
-  if (input.validators !== false) config.validators = ["builtin.whitespace", "builtin.untranslated"];
+  const whitespace = input.whitespaceValidator !== false;
+  const untranslated = input.untranslatedValidator !== false;
+  if (whitespace || untranslated) {
+    config.validators = [...(whitespace ? ["builtin.whitespace"] : []), ...(untranslated ? ["builtin.untranslated"] : [])];
+  }
   const problems = validateProjectConfig(config);
   if (problems.length > 0) throw new ApiError("invalid", `この内容ではプロジェクトを作れません: ${problems.join(" / ")}`);
   return config;

@@ -290,6 +290,11 @@ export interface CellValue extends CellRef {
   updatedBy?: string;
   /** 値を付けた時点の、対象（本文など）の版。 */
   basisHash?: string;
+  /**
+   * 値に添えたコメント（列ソースが load で返す。任意）。レビュー列の列ソースは、最新の投稿のコメントを入れる。
+   * 表のレビュー列のセルに、付けた人（updatedBy）と並べて出る。
+   */
+  comment?: string;
 }
 
 /** 保存の要求。expectedVersion が今の版と違えば、上書きせずに競合として失敗させる。 */

@@ -20,7 +20,8 @@ export async function runInit(opts: CliOptions, io: CliIO): Promise<number> {
     languages: languages.map((l, i) => ({ ...l, ...(i === 0 ? { pinned: true } : source !== undefined ? { basedOn: source } : {}) })),
     statusColumn: !opts.noStatus,
     reviewColumn: !opts.noReview,
-    validators: !opts.noValidators,
+    whitespaceValidator: !opts.noValidators,
+    untranslatedValidator: !opts.noValidators,
   };
   if (opts.keyColumn !== undefined || opts.textColumns !== undefined || opts.encoding !== undefined) {
     input.mapping = {

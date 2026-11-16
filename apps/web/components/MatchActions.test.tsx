@@ -7,7 +7,7 @@ import { Studio } from "@/components/Studio";
 import { makeInfo, mockApi } from "@/test/fixtures";
 import { renderWithStudio } from "@/test/render";
 
-/* 「一括アクション」: 絞り込みに合う行すべてに、アクションを実行する（表では開いているリソース、検索ビューではプロジェクト全体）。 */
+/* 「一括アクション」: 絞り込みに合う行すべてに、アクションを実行する（表では開いているリソース、検索結果の表示ではプロジェクト全体）。 */
 
 const ACTIONS = [
   { id: "ticket", label: "チケット", target: "cell" as const },
@@ -108,7 +108,7 @@ describe("一括アクションのメニュー", () => {
   });
 });
 
-describe("表と検索ビューの一括アクション", () => {
+describe("表と検索結果の表示の一括アクション", () => {
   const TREE = [
     { id: "a", name: "a.csv", kind: "resource" as const, resource: { id: "a.csv", path: "a.csv", name: "a.csv" } },
     { id: "b", name: "b.csv", kind: "resource" as const, resource: { id: "b.csv", path: "dir/b.csv", name: "b.csv" } },
@@ -156,20 +156,20 @@ describe("表と検索ビューの一括アクション", () => {
     await waitFor(() => expect(api.rows.mock.calls.length).toBeGreaterThan(rowsBefore));
   });
 
-  it("検索ビューからは、条件に合う行のあるリソースだけを回す（合う行のないリソースには呼ばない）", async () => {
+  it("検索結果の表示からは、条件に合う行のあるリソースだけを回す（合う行のないリソースには呼ばない）", async () => {
     const { api } = await renderStudio();
     api.runAction.mockResolvedValue({ patched: 4, matched: 4 });
     fireEvent.click(screen.getByRole("button", { name: "未翻訳のみ" }));
-    fireEvent.click(screen.getByRole("button", { name: "検索ビュー" }));
-    const view = await screen.findByRole("region", { name: "検索ビュー" });
+    fireEvent.click(screen.getByRole("button", { name: "全体" }));
+    const view = await screen.findByRole("region", { name: "検索結果の表示" });
     await waitFor(() => expect(within(view).getByRole("status").textContent).toContain("4 行"));
-    // 検索ビューを開いている間、表のツールバーの一括アクション（開いているリソースだけが対象）は出さない。
+    // 検索結果の表示を開いている間、表のツールバーの一括アクション（開いているリソースだけが対象）は出さない。
     expect(screen.getAllByRole("button", { name: "一括アクション ▾" })).toHaveLength(1);
     fireEvent.click(within(view).getByRole("button", { name: "一括アクション ▾" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "チケット（日本語 / 本文）" }));
     const dialog = await screen.findByRole("dialog", { name: "一括アクション: チケット（日本語 / 本文）" });
     expect(dialog.textContent).toContain("プロジェクト全体の、絞り込みに合う 4 行に実行します。");
-    // 検索ビューの問い合わせ（行を返すもの。ツリーの件数の問い合わせは行を返さない）だけを数える。
+    // 検索結果の表示の問い合わせ（行を返すもの。ツリーの件数の問い合わせは行を返さない）だけを数える。
     const viewQueries = () => api.query.mock.calls.filter((c) => (c[0].limit ?? 0) > 0).length;
     const queriesBefore = viewQueries();
     await press(() => within(dialog).getByRole("button", { name: "4 行に実行" }));
@@ -177,7 +177,7 @@ describe("表と検索ビューの一括アクション", () => {
     expect(api.runAction.mock.calls.map((c) => c[0])).toEqual([
       { actionId: "ticket", resourceId: "b.csv", filter: { onlyUntranslated: true, languages: ["ja", "en"] }, cellId: "text@ja", language: "ja" },
     ]);
-    // 終わったら、検索ビューも読み直す。
+    // 終わったら、検索結果の表示も読み直す。
     await waitFor(() => expect(viewQueries()).toBeGreaterThan(queriesBefore));
   });
 });

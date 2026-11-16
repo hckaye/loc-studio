@@ -31,12 +31,15 @@ describe("reviewSource", () => {
     expect(p1).toMatchObject({ cell: cell("k"), columnId: "review", verdict: "back", comment: "誤字", userName: "alice", basisHash: "h1" });
     expect(typeof p1.id).toBe("string");
     expect(typeof p1.createdAt).toBe("string");
+    // 値には、最新の投稿のコメントと投稿者も付く（表のセルに出る）。
+    expect(await reviewSource.load([cell("k")], ctx)).toEqual([{ ...cell("k"), value: "back", updatedAt: p1.createdAt, updatedBy: "alice", basisHash: "h1", comment: "誤字" }]);
 
     state.user = "bob";
     const p2 = await reviewSource.postReview!({ cell: cell("k"), verdict: "ok", comment: "" }, ctx);
     expect(p2.userName).toBe("bob");
     expect(p2.basisHash).toBeUndefined();
 
+    // コメントのない投稿が最新になると、前の投稿のコメントは付かない。
     const values = await reviewSource.load([cell("none"), cell("k")], ctx);
     expect(values).toEqual([{ ...cell("k"), value: "ok", updatedAt: p2.createdAt, updatedBy: "bob" }]);
 

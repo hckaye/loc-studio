@@ -93,7 +93,7 @@ describe("組み立てた条件から式を作る", () => {
 
   it("条件を、列と選択肢の表示名で読める文にする", () => {
     expect(describeCondition({ field: "status", language: "en", op: "eq", value: "done" }, fields, info)).toBe("状態（英語）が次と同じ「完了」");
-    expect(describeCondition({ field: "text", language: "any", op: "empty", value: "" }, fields, info)).toBe("text（どれかの言語）が空");
+    expect(describeCondition({ field: "text", language: "any", op: "empty", value: "" }, fields, info)).toBe("本文（どれかの言語）が空");
   });
 });
 

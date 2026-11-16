@@ -26,7 +26,7 @@ describe("表の列の組み立て", () => {
     expect(initialPins(info)).toEqual(["ja"]);
     const wide = buildLayout({ info, visibleLanguages: ["ja", "en"], pinnedLanguages: ["ja", "en"], widths: {}, viewportWidth: 3000 });
     expect(wide.effectivePins).toEqual(["ja", "en"]);
-    const narrow = buildLayout({ info, visibleLanguages: ["ja", "en"], pinnedLanguages: ["ja", "en"], widths: {}, viewportWidth: 1300 });
+    const narrow = buildLayout({ info, visibleLanguages: ["ja", "en"], pinnedLanguages: ["ja", "en"], widths: {}, viewportWidth: 1400 });
     expect(narrow.effectivePins).toEqual(["ja"]);
     expect(narrow.autoUnpinned).toEqual(["en"]);
     const tiny = buildLayout({ info, visibleLanguages: ["ja", "en"], pinnedLanguages: ["ja"], widths: {}, viewportWidth: 200 });

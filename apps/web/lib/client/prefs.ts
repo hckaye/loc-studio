@@ -18,9 +18,9 @@ export interface Favorite {
   name: string;
   filters: ToolbarFilters;
   sort: SortState | null;
-  /** 保存したときに開いていた画面（表か、プロジェクト全体の検索ビュー）。 */
+  /** 保存したときに開いていた画面（表か、プロジェクト全体の検索結果の表示）。 */
   view: "grid" | "search";
-  /** 検索ビューの集計の区切り。 */
+  /** 検索結果の表示の集計の区切り。 */
   groupBy: string[];
   columns?: { hidden: string[]; languages: string[] };
 }
