@@ -63,6 +63,13 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 
 プラグインの例を文書に書くときは、実在の API だけを使い、実際に動かして確かめた範囲を書きます。
 
+## 絞り込みと、画面の状態を足す・変えるとき
+
+- **絞り込みの条件は、表だけに作らない。** 行の条件は `RowFilter`（`packages/server/src/api-types.ts`）に足し、`prepareFilter` と `matchEntries`（`packages/server/src/rows.ts`）に実装します。`rows` とリソースをまたぐ `query` が同じ処理を通るので、表、ツリーの件数、検索ビュー、コマンドラインの `query` に同じ条件が効きます。画面は `toRowFilter`（`apps/web/lib/client/filters.ts`）で条件を組み立てます。表にだけ効く絞り込みを足すと、ツリーの件数や書き出しと数が合わなくなります。
+- **条件式（`where`）の欄や比べ方を足すとき**は、解釈（`packages/server/src/query.ts`）、画面の組み立てと補完（`apps/web/lib/client/query-text.ts` の `queryFields`、`opsFor`、`suggest`）、文書（[docs/QUERY.md](docs/QUERY.md)）を揃えます。条件式に、列の ID、言語 ID、選択肢の値を決め打ちしません（欄は設定の列から作ります）。
+- **画面の状態は、サーバー側に保存する。** 開いているリソース、絞り込み、並べ替え、列の表示、お気に入りなど、開き直したときに戻すものは `GridPrefs`（`apps/web/lib/client/prefs.ts`）に足します。`uiState` / `setUiState` で、その PC の DB に保存されます。ブラウザの localStorage だけに置かないでください。デスクトップ版は起動のたびに内部サーバーのポートが変わり、ポートごとに分かれる localStorage は、次の起動で読めません（列の幅や表示する言語は、以前は localStorage だけに置いていました）。
+- **保存してあった状態は、形が古くても読めるようにする。** 項目を足したら、その項目のない状態と、設定が変わって合わなくなった状態（なくなった列やリソース）で画面が壊れないことを確かめます。合わない絞り込みは、外して知らせます（`Studio.tsx` の `onRowsError`）。
+
 ## テストの決まり
 
 テストを足す・直すときは、次の 2 つを確かめます。
@@ -99,7 +106,7 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 
 ## 文書
 
-- 振る舞いを変えたら、同じ変更で文書を直します。設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md) です。
+- 振る舞いを変えたら、同じ変更で文書を直します。設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md)、絞り込みと条件式と検索ビューは [docs/QUERY.md](docs/QUERY.md) です。
 - 文書には、確かめたことと確かめていないことを分けて書きます。動かしていない手順を、動かしたように書きません。
 - 文章は、利用者が何をすればよいか、何が起きるかを普通の文で書きます。矢印の連なり、全角ダッシュでの言い換え、決め文句は使いません。
 

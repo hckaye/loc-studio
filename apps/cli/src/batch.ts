@@ -1,6 +1,7 @@
 /**
  * サービス層（createWorkspace）を通すコマンド。画面と同じキャッシュ・履歴・ドラフトを使う。
  */
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ApiError, createWorkspace } from "@loc-studio/server";
 import type { JobInfo, ProjectInfo, TreeNodeInfo, Workspace } from "@loc-studio/server";
@@ -443,6 +444,69 @@ async function cmdEntry(ws: Workspace, opts: CliOptions, io: CliIO): Promise<num
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// query
+// ---------------------------------------------------------------------------
+
+/** query: 条件に合う行を、リソースをまたいで数え、集計し、CSV / TSV に書き出す。読めないリソースがあれば終了コード 1。 */
+async function cmdQuery(ws: Workspace, opts: CliOptions, io: CliIO): Promise<number> {
+  const info = await ws.info();
+  checkLanguages(info, opts.languages);
+  const languages = opts.languages ?? info.languages.map((l) => l.id);
+  const resources = opts.resources !== undefined ? await selectResources(ws, opts.resources) : undefined;
+  if (resources !== undefined && resources.length === 0) throw new UsageError(`--resources に合うリソースがありません: ${opts.resources}`);
+  const request = {
+    languages,
+    ...(resources ? { resourceIds: resources.map((r) => r.id) } : {}),
+    ...(opts.where !== undefined ? { where: opts.where } : {}),
+    ...(opts.groupBy && opts.groupBy.length > 0 ? { groupBy: opts.groupBy } : {}),
+    ...(opts.columns ? { cells: opts.columns } : {}),
+  };
+
+  if (opts.format !== undefined) {
+    // 集計の区切りがあれば集計を、なければ行を書き出す。
+    const table = request.groupBy ? "groups" : "rows";
+    const r = await ws.exportQuery({ ...request, format: opts.format, table });
+    const text = `${opts.bom ? "\uFEFF" : ""}${r.text}`;
+    if (opts.out !== undefined) {
+      const file = path.resolve(io.cwd, opts.out);
+      await writeFile(file, text, "utf8");
+      io.stdout(`${r.rows} 行を書き出しました: ${file}${r.truncated ? "（行数の上限で打ち切りました）" : ""}\n`);
+    } else {
+      io.stdout(text);
+      if (r.truncated) io.stderr("行数の上限で打ち切りました。\n");
+    }
+    return 0;
+  }
+
+  const r = await ws.query({ ...request, limit: opts.limit ?? 0 });
+  if (opts.json) {
+    json(io, r);
+    return r.unreadable.length > 0 ? 1 : 0;
+  }
+  const lines: string[] = [`条件に合う行: ${r.matched.rows} / ${r.totalRows} 行（原文 ${r.matched.characters} 文字 / ${r.matched.words} 語）`];
+  for (const res of r.resources) if (res.matched > 0) lines.push(`  ${res.path}: ${res.matched} / ${res.total}`);
+  for (const u of r.unreadable) lines.push(`  ${u.path}  (読めません: ${u.error})`);
+  if (r.groups) {
+    lines.push("", `集計（${(opts.groupBy ?? []).join(", ")}）:`);
+    for (const g of r.groups) lines.push(`  ${g.labels.join(" / ")}: ${g.rows} 行（${g.characters} 文字 / ${g.words} 語）`);
+  }
+  if (r.rows.length > 0) {
+    lines.push("", "行:");
+    for (const row of r.rows) {
+      lines.push(`  ${row.path}  ${row.key}`);
+      for (const [cellId, cell] of Object.entries(row.cells)) {
+        const value = cell.value === undefined || cell.value === null || cell.value === "" ? "" : typeof cell.value === "string" ? cell.value : JSON.stringify(cell.value);
+        // 改行のある値も 1 行で見せる。
+        if (value !== "") lines.push(`    ${cellId}: ${value.replace(/\r?\n/g, "\\n")}`);
+      }
+    }
+    if (r.rows.length < r.matched.rows) lines.push(`  …（${r.matched.rows} 行のうち ${r.rows.length} 行。--limit で増やせます）`);
+  }
+  io.stdout(lines.join("\n") + "\n");
+  return r.unreadable.length > 0 ? 1 : 0;
+}
+
 /** resource create: 行のない新しいリソースを作る。 */
 async function cmdResource(ws: Workspace, opts: CliOptions, io: CliIO): Promise<number> {
   const [resourcePath] = opts.args as [string];
@@ -469,6 +533,8 @@ export async function runBatchCommand(opts: CliOptions, io: CliIO): Promise<numb
         return await cmdRun(ws, opts, io);
       case "status":
         return await cmdStatus(ws, opts, io);
+      case "query":
+        return await cmdQuery(ws, opts, io);
       case "save":
         return await cmdSave(ws, opts, io);
       case "set":

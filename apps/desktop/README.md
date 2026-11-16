@@ -70,16 +70,17 @@ npm run check:desktop
 - `npx tsc -p apps/desktop` が通ります。
 - `npx vitest run apps/desktop` が通ります。空きポート、appDir、環境変数の許可リスト、トークンの生成、起動待ち、URL、メニュー、トークンの置き換え、watchdog、配布物へのサーバーのコピー（`after-pack.cjs`）を調べています。
 - このテストには、standalone の `launch.mjs` を実際に起動する結合テストも入っています。合言葉なしの `/api/session` は 401、間違った合言葉も 401、正しい合言葉はクッキーに換わって 303 で URL から消えます。そのクッキーでは 200 です。親の環境の `LOC_STUDIO_MODE=web`、`LOC_STUDIO_HOST=0.0.0.0` は子プロセスに届かず、出力に合言葉は残りません。停止後はポートが閉じます。
-- 2026-11-16 に Windows 11（x64）で、`npm run build:web` と `npm run dist:desktop` が通り、インストーラー（`loc-studio Setup 0.1.0.exe`）、zip、展開済みのフォルダ（`win-unpacked`）ができました。zip の中に `resources/server/node_modules`（`next`、`jiti`、`@loc-studio/sdk`）が入っていることを確かめました。
-- 同じ日に `npm run check:desktop`（19 項目）を実行し、すべて通りました。展開済みのフォルダの写しを起動して、次を確かめています。
+- 2026-11-16 に Windows 11（x64）で、`npm run build:web` と `npm run dist:desktop` が通り、インストーラー（`loc-studio Setup 0.2.0.exe`）、zip、展開済みのフォルダ（`win-unpacked`）ができました。zip の中に `resources/server/node_modules`（`next`、`jiti`、`@loc-studio/sdk`）が入っていることを確かめました。
+- 同じ日に `npm run check:desktop`（26 項目）を実行し、すべて通りました。展開済みのフォルダの写しを 2 回起動して、次を確かめています。
   - 内部サーバーが起動し、ウィンドウにページが出て、合言葉が URL から消えている。
   - 開いた直後は設定ファイルの信頼の確認を待ち、信頼するとプロジェクトが開く。
   - プロジェクトのプラグインフォルダの TypeScript のプラグインが読み込まれる。
   - アプリの隣の `plugins` と、個人の設定フォルダの `plugins` を探す対象にしている。アプリの隣の `plugins` は起動時に作ってある。
   - アプリを動かしたまま、アプリの隣の `plugins` に TypeScript のプラグイン（`@loc-studio/sdk` を実行時に import するもの）を置いて再読み込みすると、信頼の確認なしで読み込まれ、設定の「登録されていない」の警告が消え、そのバリデータの指摘が行に出る。
-  - 信頼したあとの画面に、プロジェクトのツリーが出る。
-  - 個人の設定を、`--user-data-dir` で指定した設定フォルダに書く。
+  - 信頼したあとの画面に、プロジェクトのツリーが出る。条件式で、リソースをまたいで行を数えられる。
+  - 開いているリソースと絞り込みを変えると、その PC の DB に保存される。個人の設定を、`--user-data-dir` で指定した設定フォルダに書く。
   - ウィンドウを閉じるとアプリが終了し、内部サーバーにつながらなくなる。
+  - もう一度起動すると、内部サーバーは別のポートで動く（1 回目は 61911、2 回目は 65270 でした）。信頼の確認はもう出ず、前回開いていたリソースが開き、前回の絞り込み（検索の文字）が戻っている。
 
 コードを読んで確認しただけのことは次のとおりです。
 

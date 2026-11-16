@@ -1,5 +1,6 @@
 // 梱包したデスクトップ版（electron-builder の出力）を実際に起動して確かめる。
-// 見るのは、サーバーが起動して画面が出ること、アプリを作り直さずにプラグインを後から足せること、終了でサーバーも止まること。
+// 見るのは、サーバーが起動して画面が出ること、アプリを作り直さずにプラグインを後から足せること、終了でサーバーも止まること、
+// 起動し直したときに前回の画面の状態（開いていたリソースと絞り込み）が戻ること。
 // 使い方: npm run build:web && npm run dist:desktop のあと npm run check:desktop
 //   アプリの場所は、環境変数 LOC_STUDIO_DESKTOP_APP（実行ファイルのパス）で指定できる。
 //   見つからなければ、何も確かめずに終了コード 2 で終わる。画面を表示できる環境が要る。
@@ -84,22 +85,26 @@ export default definePlugin({
   writeFileSync(file, JSON.stringify(config, null, 2));
 }
 
-// ---- 起動。DevTools のプロトコルで、ウィンドウの中のページを操作する。
-const childEnv = { ...process.env };
-delete childEnv.ELECTRON_RUN_AS_NODE;
-const app = spawn(exe, ["--remote-debugging-port=0", `--user-data-dir=${userData}`, project], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
-let appLog = "";
-app.stdout.on("data", (d) => (appLog += d));
-app.stderr.on("data", (d) => (appLog += d));
-const appExited = new Promise((resolve) => app.once("exit", resolve));
+/** いま動かしているアプリ（失敗したときに止めるため、覚えておく）。 */
+let running;
 
-let socket;
-let base;
-try {
+/**
+ * アプリを起動して、ウィンドウの中のページを DevTools のプロトコルで操作できるようにする。
+ * 起動のたびに、内部サーバーは別のポートで動く。
+ */
+async function launch() {
+  const childEnv = { ...process.env };
+  delete childEnv.ELECTRON_RUN_AS_NODE;
+  const app = spawn(exe, ["--remote-debugging-port=0", `--user-data-dir=${userData}`, project], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const session = { app, log: "", exited: new Promise((resolve) => app.once("exit", resolve)) };
+  running = session;
+  app.stdout.on("data", (d) => (session.log += d));
+  app.stderr.on("data", (d) => (session.log += d));
+
   const wsUrl = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`アプリが起動しませんでした: ${appLog.slice(-600)}`)), 60_000);
+    const timer = setTimeout(() => reject(new Error(`アプリが起動しませんでした: ${session.log.slice(-600)}`)), 60_000);
     const look = () => {
-      const m = /DevTools listening on (ws:\/\/\S+)/.exec(appLog);
+      const m = /DevTools listening on (ws:\/\/\S+)/.exec(session.log);
       if (!m) return;
       clearTimeout(timer);
       resolve(m[1]);
@@ -107,10 +112,11 @@ try {
     app.stderr.on("data", look);
     app.once("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`アプリが終了しました（終了コード ${code}）: ${appLog.slice(-600)}`));
+      reject(new Error(`アプリが終了しました（終了コード ${code}）: ${session.log.slice(-600)}`));
     });
   });
-  socket = new WebSocket(wsUrl);
+  const socket = new WebSocket(wsUrl);
+  session.socket = socket;
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
@@ -132,7 +138,6 @@ try {
       socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
 
-  console.log("== 起動 ==");
   // ウィンドウは、内部サーバーが起動してから開く。ページが出るまで待つ。
   let target;
   for (const deadline = Date.now() + 90_000; Date.now() < deadline; await sleep(250)) {
@@ -140,9 +145,8 @@ try {
     target = targetInfos.find((t) => t.type === "page" && /^http:\/\/127\.0\.0\.1:\d+\//.test(t.url) && !t.url.includes("token="));
     if (target) break;
   }
-  if (!target) throw new Error(`ウィンドウにページが出ませんでした: ${appLog.slice(-900)}`);
-  base = new URL(target.url).origin;
-  check(true, `内部サーバーが起動し、ウィンドウにページが出る（合言葉は URL から消えている）`);
+  if (!target) throw new Error(`ウィンドウにページが出ませんでした: ${session.log.slice(-900)}`);
+  const base = new URL(target.url).origin;
   const { sessionId } = await send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
   await send("Runtime.enable", {}, sessionId);
   const evaluate = async (expression) => {
@@ -164,10 +168,37 @@ try {
     if (body?.error) throw new Error(`${method}: ${body.error.code} ${body.error.message}`);
     return body.result;
   };
-  const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  /** ウィンドウを閉じて、アプリと内部サーバーが止まるのを待つ。 */
+  const quit = async () => {
+    await Promise.race([send("Browser.close").catch(() => undefined), sleep(5000)]);
+    await Promise.race([session.exited, sleep(20_000)]);
+    const exited = app.exitCode !== null;
+    let serverAlive = true;
+    for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(250)) {
+      serverAlive = await fetch(`${base}/api/session`).then(
+        () => true,
+        () => false,
+      );
+      if (!serverAlive) break;
+    }
+    return { exited, serverAlive };
+  };
+  return { base, evaluate, until, rpc, quit };
+}
 
+const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+/** ツリーのリソースの行（名前で探す）と、表のキーの並び。ページの中で評価する式。 */
+const treeRow = (name) => `[...document.querySelectorAll(".tree-row.resource")].find((b) => b.textContent.includes(${JSON.stringify(name)}))`;
+const KEYS = `[...document.querySelectorAll("[data-row] .k-key")].map((c) => c.textContent.trim()).join(",")`;
+const SEARCH_BOX = `document.querySelector('input[type=search][aria-label="検索"]')`;
+
+try {
+  console.log("== 起動 ==");
+  const first = await launch();
+  const { evaluate, until, rpc } = first;
+  check(true, `内部サーバーが起動し、ウィンドウにページが出る（合言葉は URL から消えている）`);
   const versions = await evaluate("navigator.userAgent");
-  console.log(`  ${/Electron\/\S+/.exec(versions)?.[0] ?? versions}  ${base}`);
+  console.log(`  ${/Electron\/\S+/.exec(versions)?.[0] ?? versions}  ${first.base}`);
 
   // 設定ファイルと、プロジェクトのプラグインを信頼する（画面では確認のダイアログで行う操作）。
   let info = await rpc("info");
@@ -230,33 +261,56 @@ try {
 
   console.log("== 画面 ==");
   await evaluate("location.reload(), true");
-  await until(`document.readyState === "complete" && [...document.querySelectorAll(".tree-row.resource")].some((b) => /ui\\.csv/.test(b.textContent))`, "ツリーにリソースが出る");
+  await until(`document.readyState === "complete" && !!(${treeRow("ui.csv")})`, "ツリーにリソースが出る");
   check(true, "信頼したあとの画面に、プロジェクトのツリーが出る");
+  // 条件式で、リソースをまたいで数えられる（集計と書き出しも、同じサーバーの処理を使う）。
+  const counted = await rpc("query", { languages: ["ko"], where: "text@ko is empty or issues@ko >= error" });
+  check(counted.matched.rows === 2 && counted.totalRows === 12, "条件式で、リソースをまたいで行を数えられる（韓国語が空か、エラーのある 2 行）", counted.matched);
 
   console.log("== 設定フォルダと終了 ==");
-  check(existsSync(path.join(userData, "web-session.json")), "個人の設定（最近開いたプロジェクト）を、指定した設定フォルダに書く");
-  await Promise.race([send("Browser.close").catch(() => undefined), sleep(5000)]);
-  await Promise.race([appExited, sleep(20_000)]);
-  check(app.exitCode !== null, "ウィンドウを閉じると、アプリが終了する");
-  let serverAlive = true;
-  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(250)) {
-    serverAlive = await fetch(`${base}/api/session`).then(() => true, () => false);
-    if (!serverAlive) break;
+  // 開いているリソースと絞り込みを変えて、状態が保存されるのを待つ。
+  await evaluate(`${treeRow("ui.csv")}.click(), true`);
+  await until(`${KEYS}.startsWith("UI_OK")`, "ui.csv の行が出る");
+  await evaluate(
+    `(() => { const el = ${SEARCH_BOX}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "GOLD"); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`,
+  );
+  await until(`${KEYS} === "UI_GOLD"`, "検索で 1 行になる");
+  let saved;
+  for (const deadline = Date.now() + 15_000; Date.now() < deadline; await sleep(200)) {
+    saved = (await rpc("uiState")).state?.last;
+    if (saved?.resourceId === ui.id && saved?.filters?.search === "GOLD") break;
   }
-  check(!serverAlive, "アプリの終了で、内部サーバーも止まる（つながらなくなる）");
+  check(saved?.resourceId === ui.id && saved?.filters?.search === "GOLD", "開いているリソースと絞り込みを、その PC の DB に保存する", saved);
+  check(existsSync(path.join(userData, "web-session.json")), "個人の設定（最近開いたプロジェクト）を、指定した設定フォルダに書く");
+  const stopped = await first.quit();
+  check(stopped.exited, "ウィンドウを閉じると、アプリが終了する");
+  check(!stopped.serverAlive, "アプリの終了で、内部サーバーも止まる（つながらなくなる）");
+
+  console.log("== 起動し直したときの復元 ==");
+  const second = await launch();
+  // 起動のたびに、内部サーバーの接続先（ポート）は変わる。ブラウザの保存領域は接続先ごとなので、前の起動の分は読めない。
+  console.log(`  ${second.base}（前の起動は ${first.base}）`);
+  await second.until(`!!(${treeRow("ui.csv")}) && ${KEYS} !== ""`, "表が出る", 60_000);
+  check((await second.rpc("info")).restricted !== true, "信頼の確認は、起動し直しても残っている（もう一度は出ない）");
+  await second.until(`${KEYS} === "UI_GOLD"`, "前回の絞り込みで、行が出る");
+  check(true, "起動し直すと、前回の絞り込みが戻る（検索で絞った 1 行だけが出る）");
+  check((await second.evaluate(`${treeRow("ui.csv")}.classList.contains("selected")`)) === true, "前回開いていたリソースが開いている");
+  check((await second.evaluate(`${SEARCH_BOX}.value`)) === "GOLD", "検索欄に、前回の検索の文字が入っている");
+  const stoppedAgain = await second.quit();
+  check(stoppedAgain.exited && !stoppedAgain.serverAlive, "2 回目も、ウィンドウを閉じるとアプリと内部サーバーが止まる");
 } catch (err) {
   failures++;
   console.error(`\n確認の途中で失敗しました: ${err?.stack ?? err}`);
-  if (appLog.trim()) console.error(`アプリの出力（最後の部分）:\n${appLog.slice(-1500)}`);
+  if (running?.log.trim()) console.error(`アプリの出力（最後の部分）:\n${running.log.slice(-1500)}`);
 } finally {
   try {
-    socket?.close();
+    running?.socket?.close();
   } catch {
     // すでに閉じている。
   }
-  if (app.exitCode === null) {
-    app.kill();
-    await Promise.race([appExited, sleep(10_000)]);
+  if (running && running.app.exitCode === null) {
+    running.app.kill();
+    await Promise.race([running.exited, sleep(10_000)]);
   }
   try {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });

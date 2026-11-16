@@ -158,6 +158,11 @@ window.__t = {
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   },
+  select: (el, value) => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, value);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  },
+  labeled: (label, root) => (root ?? document).querySelector('[aria-label="' + label + '"]'),
   keys: () => __t.all("[data-row] .k-key").map((c) => c.textContent.trim()),
   toasts: () => __t.all(".toast-msg").map((t) => t.textContent),
 };
@@ -358,6 +363,145 @@ try {
   check(readFileSync(created, "utf8") === "ID,JP,EN,CN,KR,MaxLen\n", "見出しだけのリソースができる", readFileSync(created, "utf8"));
   await until(`__t.all(".tree-row.resource").some((b) => /new\\.csv/.test(b.textContent))`, "ツリーに出る");
   check(true, "作ったリソースが、ツリーに出る");
+
+  console.log("== 条件で絞り込む、ツリーの件数、検索ビュー、列の表示、状態の復元 ==");
+  const treeRow = (name) => `__t.all(".tree-row.resource").find((b) => /${name}/.test(b.textContent))`;
+  const matchLabel = (name) => `${treeRow(name)}?.querySelector(".tree-match")?.getAttribute("aria-label")`;
+  await click(treeRow("chapter01\\.csv"), "ツリーの chapter01.csv");
+  await until(`__t.keys()[0] === "CH01_INTRO_001"`, "chapter01.csv の行が出る");
+  check((await evaluate(`!document.querySelector(".tree-match")`)) === true, "絞り込んでいないあいだは、ツリーに件数を出さない");
+  // 欄、言語、比べ方を選んで条件を組み立てる（式は書かない）。
+  await click(`__t.button(/^条件/)`, "条件");
+  await until(`!!__t.labeled("条件 1 の欄")`, "条件の窓が開く");
+  await evaluate(`__t.select(__t.labeled("条件 1 の欄"), "text"), true`);
+  await until(`!!__t.labeled("条件 1 の言語")`, "言語を選ぶ欄が出る");
+  await evaluate(`__t.select(__t.labeled("条件 1 の言語"), "ko"), __t.select(__t.labeled("条件 1 の比べ方"), "empty"), true`);
+  await until(`document.querySelector(".query-preview .mono")?.textContent === "text@ko is empty"`, "組み立てた式が出る");
+  check(true, "欄、言語、比べ方を選ぶと、式が組み立てられる（text@ko is empty）");
+  await click(`__t.button(/^この条件で絞り込む$/)`, "この条件で絞り込む");
+  await until(`__t.keys().join(",") === "CH01_CHOICE_001B"`, "韓国語の本文が空の行だけになる");
+  check(true, "組み立てた条件で、表が絞り込まれる（韓国語の本文が空の 1 行）");
+  // ツリーに、条件に合う行の数が出る。
+  await until(`${matchLabel("chapter01\\.csv")} === "条件に合う行 1 件" && ${matchLabel("ui\\.csv")} === "条件に合う行 0 件"`, "ツリーに件数が出る");
+  check(true, "ツリーのリソースに、条件に合う行の数が出る（chapter01.csv 1 件、ui.csv 0 件）");
+  check((await evaluate(`document.querySelector(".tree-match-head strong")?.textContent`)) === "1 行", "ツリーの上に、合計が出る", await evaluate(`document.querySelector(".tree-match-head")?.textContent`));
+  await click(`document.querySelector(".tree-match-head input[type=checkbox]")`, "該当ありだけ");
+  await until(`!(${treeRow("ui\\.csv")}) && !!(${treeRow("chapter01\\.csv")})`, "合う行のないリソースが隠れる");
+  check(true, "「該当ありだけ」で、合う行のないリソースをツリーから隠せる");
+  await click(`document.querySelector(".tree-match-head input[type=checkbox]")`, "該当ありだけ（解除）");
+  await until(`!!(${treeRow("ui\\.csv")})`, "すべてのリソースが出る");
+
+  // 式で書く。入力に合わせて候補が出て、選んで入れられる。
+  await click(`__t.button(/^条件/)`, "条件（2 回目）");
+  await click(`__t.button(/^式で書く$/)`, "式で書く");
+  await until(`__t.labeled("条件式")?.value === "text@ko is empty"`, "組み立てた条件の式から書き始められる");
+  check(true, "「式で書く」に切り替えると、組み立てた条件の式が入っている");
+  const typeQuery = (text) => evaluate(`(() => { const el = __t.labeled("条件式"); el.focus(); __t.setValue(el, ${JSON.stringify(text)}); el.setSelectionRange(el.value.length, el.value.length); return true; })()`);
+  const suggestions = `__t.all("#query-suggestions [role=option] .mono").map((o) => o.textContent)`;
+  await typeQuery("text@ko is empty or iss");
+  await until(`${suggestions}.join(",") === "issues@,issueCode@"`, "欄の候補が出る");
+  check(true, "欄を書く場所で、入力に合う欄の候補が出る（issues@、issueCode@）");
+  await evaluate(`__t.labeled("条件式").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), true`);
+  await until(`__t.labeled("条件式").value === "text@ko is empty or issues@"`, "候補が入る");
+  await until(`${suggestions}.includes("issues@ko")`, "続けて言語の候補が出る");
+  check(true, "Enter で候補が入り、続けて言語の候補が出る");
+  await typeQuery("text@ko is empty or issues@ko >= ");
+  await until(`${suggestions}.join(",") === "none,info,warning,error"`, "値の候補が出る");
+  check(true, "比べ方のあとで、値の候補が出る（問題の重さ）");
+  // 誤った式は、当てる前にサーバーが断る。
+  await typeQuery("text@ko is empty or nope = 1");
+  await click(`__t.button(/^この条件で絞り込む$/)`, "誤った式を当てる");
+  await until(`/"nope" に当たる列がありません/.test(document.querySelector(".query-panel [role=alert]")?.textContent ?? "")`, "誤りの説明が出る");
+  check((await evaluate(`__t.keys().join(",")`)) === "CH01_CHOICE_001B", "誤った式は、説明を出して当てない（表は前の条件のまま）");
+  await typeQuery("text@ko is empty or issues@ko >= error");
+  await click(`__t.button(/^この条件で絞り込む$/)`, "式を当てる");
+  await until(`__t.keys().join(",") === "CH01_CHOICE_001A,CH01_CHOICE_001B"`, "式で絞り込まれる");
+  check(true, "「または」を含む式で絞り込める（空の本文、またはエラーのある行）");
+
+  // お気に入りに保存する。
+  await click(`__t.button(/お気に入り/)`, "お気に入り");
+  await until(`!!__t.labeled("お気に入りの名前")`, "お気に入りの窓が開く");
+  await evaluate(`__t.setValue(__t.labeled("お気に入りの名前"), "韓国語の残り"), true`);
+  await click(`__t.button(/^保存$/, __t.dialog(/^お気に入りの条件$/))`, "お気に入りを保存");
+  await until(`__t.toasts().includes("お気に入り「韓国語の残り」を保存しました")`, "保存の通知が出る");
+  check(true, "いまの条件を、名前を付けてお気に入りに保存できる");
+  await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+
+  // 検索ビュー: プロジェクト全体の結果、集計、CSV への書き出し、行へ移る。
+  await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: path.join(tmp, "downloads") });
+  await click(`__t.button(/^検索ビュー$/)`, "検索ビュー");
+  const view = `document.querySelector('[role="region"][aria-label="検索ビュー"]')`;
+  await until(`(${view}?.querySelector(".search-view-summary")?.textContent ?? "").startsWith("2 行（全 12 行のうち。1 / 3 個のリソース）")`, "検索ビューに件数が出る");
+  check(true, "検索ビューに、プロジェクト全体で条件に合う行の数が出る（2 行、3 個のリソースのうち 1 個）");
+  const resultKeys = `__t.all('table[aria-label="結果の表"] tbody tr.search-row').map((r) => r.children[1].textContent)`;
+  check((await evaluate(`${resultKeys}.join(",")`)) === "CH01_CHOICE_001A,CH01_CHOICE_001B", "結果の表に、条件に合う行が並ぶ", await evaluate(resultKeys));
+  await evaluate(`__t.select(__t.labeled("集計の区切り"), "issues@ko"), true`);
+  const groupRows = `__t.all('table[aria-label="集計の表"] tbody tr').map((r) => [...r.children].slice(0, 2).map((c) => c.textContent).join(":"))`;
+  await until(`${groupRows}.join(",") === "warning:1,error:1"`, "集計が出る");
+  check(true, "集計の区切り（韓国語の問題の重さ）を選ぶと、値ごとの行数が出る");
+  await click(`__t.button(/^結果を CSV に保存$/)`, "結果を CSV に保存");
+  const csvFile = path.join(tmp, "downloads", "loc-studio-search.csv");
+  await untilFile(() => existsSync(csvFile), "CSV のファイルができる");
+  const csv = readFileSync(csvFile);
+  const csvText = csv.subarray(3).toString("utf8");
+  check(csv[0] === 0xef && csv[1] === 0xbb && csv[2] === 0xbf, "CSV の先頭に BOM が付いている");
+  check(csvText.startsWith("resource,key,") && csvText.split("\r\n").filter((l) => l.startsWith("Assets/Text/chapter01.csv,CH01_CHOICE_001")).length === 2, "CSV に、見出しと、条件に合う 2 行が入っている", csvText.slice(0, 300));
+  await click(`${resultKeys.replace(".map((r) => r.children[1].textContent)", "")}[1]`, "結果の 2 行目");
+  await until(`!${view} && __t.keys().join(",") === "CH01_CHOICE_001A,CH01_CHOICE_001B"`, "表に戻る");
+  await until(`document.querySelector(".grid-scroll")?.getAttribute("aria-activedescendant")?.startsWith("gc-1-")`, "選んだ行が選択される");
+  check(true, "結果の行を押すと、絞り込みを保ったまま表に戻り、その行が選ばれる");
+
+  // 列を隠し、並べ替えて、横にスクロールする。
+  const enumCells = `document.querySelectorAll('[data-row="0"] .k-enum').length`;
+  const enumBefore = await evaluate(enumCells);
+  await click(`__t.button(/^表示する列を選ぶ/)`, "列");
+  await click(`__t.all('[role="dialog"][aria-label="表示する列"] label.check').find((l) => l.textContent.trim().startsWith("テキスト"))?.querySelector("input")`, "ステータスの列のチェック");
+  await until(`${enumCells} === 0`, "ステータスの列が消える");
+  check(enumBefore > 0, "列の表示を切り替えると、その列が表から消える（ステータスの列）", enumBefore);
+  await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
+  await click(`__t.button(/^キー で並べ替え/)`, "キーの見出し");
+  await click(`__t.button(/^キー で並べ替え/)`, "キーの見出し（2 回目）");
+  await until(`__t.keys().join(",") === "CH01_CHOICE_001B,CH01_CHOICE_001A"`, "キーの降順になる");
+  // ツリーのフォルダをたたむ（開き直したあとも、たたんだままであること）。
+  const systemFolder = `__t.all(".tree-row.folder").find((b) => b.querySelector(".tree-name")?.textContent === "system")`;
+  await click(systemFolder, "ツリーの system フォルダ");
+  await until(`!(${treeRow("ui\\.csv")})`, "フォルダをたたむと、中のリソースが隠れる");
+  const scrolled = await evaluate(`(() => { const el = document.querySelector(".grid-scroll"); el.scrollLeft = 180; return el.scrollLeft; })()`);
+  check(scrolled > 0, "表は横にスクロールできる（復元の確認の前提）", scrolled);
+  // 状態がサーバー側に保存されるのを待つ（ブラウザの保存領域は消して、サーバー側から戻ることを確かめる）。
+  const savedLeft = `fetch("/api/rpc/uiState", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json()).then((b) => b.result?.state?.last?.scroll?.left)`;
+  await until(`${savedLeft}.then((v) => v === ${scrolled})`, "状態が、サーバー側に保存される");
+  check(true, "画面の状態（スクロールの位置を含む）が、サーバー側（その PC の DB）に保存される");
+  await evaluate(`localStorage.clear(), true`);
+  await send("Page.navigate", { url: base }, sessionId);
+  await until(`document.readyState === "complete" && !!document.querySelector('[data-row="0"] .k-key')`, "開き直して、表が出る", 60_000);
+  await evaluate(HELPERS);
+  check((await evaluate(`document.querySelector(".tree-row.resource.selected")?.textContent.includes("chapter01.csv")`)) === true, "開き直すと、前回開いていたリソースが開く");
+  await until(`__t.keys().join(",") === "CH01_CHOICE_001B,CH01_CHOICE_001A"`, "絞り込みと並べ替えが戻る");
+  check(true, "前回の絞り込み（条件式）と並べ替え（キーの降順）が戻る");
+  check((await evaluate(`__t.button(/^条件/).textContent.includes("式")`)) === true, "条件のボタンに、式で絞り込んでいることが出る");
+  check((await evaluate(enumCells)) === 0, "隠した列は、隠れたまま");
+  await until(`document.querySelector(".grid-scroll").scrollLeft === ${scrolled}`, "横のスクロールの位置が戻る");
+  check(true, "スクロールの位置が戻る");
+  check((await evaluate(`${systemFolder}?.closest('[role="treeitem"]')?.getAttribute("aria-expanded") === "false" && !(${treeRow("ui\\.csv")})`)) === true, "たたんだフォルダは、たたんだまま");
+  await click(systemFolder, "ツリーの system フォルダ（開く）");
+  await until(`!!(${treeRow("ui\\.csv")})`, "フォルダを開くと、中のリソースが出る");
+  check((await evaluate(`__t.button(/お気に入り/).textContent.includes("1")`)) === true, "お気に入りが残っている");
+  // お気に入りを選ぶと、その条件になる（いまは同じ条件なので、いったん条件を外してから選ぶ）。
+  await click(`__t.button(/^条件/)`, "条件（外す）");
+  await click(`__t.button(/^条件を外す$/)`, "条件を外す");
+  await until(`__t.keys().length === 8`, "条件を外すと全行が出る");
+  await until(`!document.querySelector(".tree-match")`, "ツリーの件数が消える");
+  check(true, "条件を外すと、全行が出て、ツリーの件数も消える");
+  await click(`__t.button(/お気に入り/)`, "お気に入り");
+  await click(`__t.all('[role="dialog"][aria-label="お気に入りの条件"] .menu-item').find((b) => b.textContent.trim() === "韓国語の残り")`, "お気に入りの項目");
+  await until(`__t.keys().length === 2`, "お気に入りの条件になる");
+  check(true, "お気に入りを選ぶと、保存した条件で絞り込まれる");
+  // あとの確認のために、列の表示を戻す。
+  await click(`__t.button(/^表示する列を選ぶ/)`, "列");
+  await click(`__t.button(/^すべて表示$/)`, "すべて表示");
+  await until(`${enumCells} > 0`, "列が戻る");
+  await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
 
   const errors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);
   check(errors.length === 0, "操作の途中で、失敗の通知は出ていない", errors);

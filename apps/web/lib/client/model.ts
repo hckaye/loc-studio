@@ -145,6 +145,8 @@ export interface LayoutInput {
   partialPins?: Record<string, string[]>;
   /** 表の見える幅。固定列の上限の計算に使う。0 なら上限を見ない。 */
   viewportWidth: number;
+  /** 隠す列（列の ID）。キーの列は隠さない。 */
+  hiddenColumns?: string[];
 }
 
 export interface GridLayout {
@@ -168,7 +170,11 @@ export function buildLayout(input: LayoutInput): GridLayout {
     const cellId = cellIdOf(col, language);
     return { cellId, col, kind, groupId, width: widths[cellId] ?? DEFAULT_WIDTH[kind], ...(language !== undefined ? { language } : {}) };
   };
-  const commonCols = commonColumns(info).map((c) => mk(c, COMMON_GROUP_ID));
+  const hidden = new Set(input.hiddenColumns ?? []);
+  const shown = (c: ColumnDef): boolean => c.kind === "key" || !hidden.has(c.id);
+  const commonCols = commonColumns(info)
+    .filter(shown)
+    .map((c) => mk(c, COMMON_GROUP_ID));
   const common: GridGroup = {
     id: COMMON_GROUP_ID,
     kind: "common",
@@ -180,10 +186,15 @@ export function buildLayout(input: LayoutInput): GridLayout {
   };
   // 設定の言語の並びを保つ
   const visible = info.languages.filter((l) => input.visibleLanguages.includes(l.id));
-  const langGroups: GridGroup[] = visible.map((l) => {
-    const cols = languageColumns(info, l.id).map((c) => mk(c, `lang:${l.id}`, l.id));
-    return { id: `lang:${l.id}`, kind: "language", language: l, label: l.label, columns: cols, pinned: false, width: sum(cols) };
-  });
+  const langGroups: GridGroup[] = visible
+    .map((l): GridGroup => {
+      const cols = languageColumns(info, l.id)
+        .filter(shown)
+        .map((c) => mk(c, `lang:${l.id}`, l.id));
+      return { id: `lang:${l.id}`, kind: "language", language: l, label: l.label, columns: cols, pinned: false, width: sum(cols) };
+    })
+    // 列をすべて隠した言語は、グループごと出さない。
+    .filter((g) => g.columns.length > 0);
   // ピン: 指定された順（ピンした順）に固定側に並べる。一部の列だけ固定する言語は、その列だけを固定側に出す。
   const partial = input.partialPins ?? {};
   const pinnedPart = (g: GridGroup): GridColumn[] => {

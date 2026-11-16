@@ -16,6 +16,9 @@ export default defineConfig({
   },
   test: {
     testTimeout: 20000,
+    // 準備（beforeEach）でプロジェクトを写してワークスペースを開く。新しい環境での 1 回目は、プラグインの読み込みなどで 10 秒（既定）を超えることがある
+    // （Linux のコンテナで、1 回目の実行だけ準備が打ち切られて落ちた）。
+    hookTimeout: 30000,
     projects: [
       {
         extends: true,

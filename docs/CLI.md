@@ -54,6 +54,7 @@ Windows では何もしません（実行権限がない）。いちど権限が
 | [`validate`](#validate) | プロジェクトを検証 | 通さない |
 | [`whoami`](#whoami) | 解決されたユーザー名と出所 | 通さない |
 | [`status`](#status) | リソースごとの件数、未保存、問題、進捗 | 通す |
+| [`query`](#query) | 条件に合う行を数え、集計し、CSV / TSV に書き出す | 通す |
 | [`generate <columnId>`](#generate) | 生成列を一括で実行 | 通す |
 | [`run <actionId>`](#run) | アクションを実行 | 通す |
 | [`save`](#save) | 未保存の本文をすべて書き込む | 通す |
@@ -207,6 +208,87 @@ Assets/Text/chapter01.csv
 ```
 
 進捗の分子は、`complete` の選択肢（既定では「確定」「承認」）の数です。設定の `grid.progressUnit` が `characters` か `words` のときは、行数ではなく原文の文字数（語数）で数え、先頭に「進捗は、原文の文字数で数えています。」と出ます（`--json` では、全体の `progressUnit` に単位が入ります）。言語 ID の位置の `-` は、行に 1 つの列（言語がない）を表します（`--json` では、言語 ID の位置が `"*"` になります）。`--resources` に一致するリソースがないときは、「対象のリソースがありません。」と出て、終了コードは 0 です。`--json` は `{ "resources": [{ "path", "entries", "unsaved", "issues", "progress": { 列 ID: { 言語 ID: { "complete", "total", "percent" } } } }] }` です。問題があっても終了コードは 0 です。読めないリソース（UTF-8 でない CSV など）は `パス  (読めません: 理由)` と出て（`--json` では該当リソースに `error`、全体に `unreadable`）、ほかのリソースは数え、終了コードは 1 です。
+
+### query
+
+条件に合う行を、リソースをまたいで数え、欄の値ごとに集計し、CSV / TSV に書き出します。条件は、画面の「条件」と同じ式です（書き方は [QUERY.md](QUERY.md#条件式の書き方)）。
+
+| オプション | 意味 |
+| --- | --- |
+| `--where <式>` | 条件式。省略時は、すべての行 |
+| `--resources <glob>` | 対象のリソース |
+| `--languages <a,b>` | 対象の言語 ID。式の `@any` / `@all`（と、言語を省いた欄）が見る言語で、出力する列の言語でもある。省略時は、すべての言語 |
+| `--group-by <欄,欄>` | 集計の区切り。値ごとの行数と、原文の文字数・語数を出す（4 つまで） |
+| `--limit <n>` | 表示する行の数（既定は 0 で、数と集計だけを出す。2000 まで） |
+| `--format <csv\|tsv>` | 条件に合う行を、CSV / TSV で出力する。`--group-by` があれば、行ではなく集計を出力する |
+| `--columns <a,b>` | 出力するセルの ID（`text@ja,textStatus@ko` など）。省略時は、対象の言語のすべての列 |
+| `--out <file>` | `--format` の出力先のファイル（省略時は標準出力） |
+| `--bom` | `--format` の出力の先頭に BOM を付ける（表計算ソフトで開くとき） |
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --where "issues >= error"
+条件に合う行: 5 / 12 行（原文 43 文字 / 6 語）
+  Assets/Text/system/ui.csv: 1 / 4
+  Assets/Text/chapter01.csv: 4 / 8
+```
+
+1 行目は、条件に合う行の数、対象の行の数、合う行の原文の量です。続けて、合う行のあるリソースを、合う行の数と全体の行数で並べます。原文の量は、最初の原文の言語（`basedOn` のない最初の言語）の本文で量ります。
+
+`--group-by` を付けると、その欄の値ごとの集計が加わります。選択式の列は、選択肢の並び順に、表示名で出ます。
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --group-by textStatus@ko
+条件に合う行: 12 / 12 行（原文 129 文字 / 15 語）
+  Assets/Text/system/ui.csv: 4 / 4
+  Assets/Text/chapter01.csv: 8 / 8
+
+集計（textStatus@ko）:
+  未着手: 10 行（122 文字 / 13 語）
+  確定: 2 行（7 文字 / 2 語）
+```
+
+`--limit` を付けると、合う行を、リソースの並び順、その中の行の順に出します。値のないセルは出しません。
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --where "text@ko is empty or issues@ko >= error" --limit 2 --columns text@ja,text@ko
+条件に合う行: 2 / 12 行（原文 18 文字 / 2 語）
+  Assets/Text/chapter01.csv: 2 / 8
+
+行:
+  Assets/Text/chapter01.csv  CH01_CHOICE_001A
+    text@ja: <b>信じる</b>
+    text@ko: <b>믿는다
+  Assets/Text/chapter01.csv  CH01_CHOICE_001B
+    text@ja: ……信じられるか
+```
+
+`--format` を付けると、数の表示の代わりに、合う行（`--group-by` があれば集計）を CSV / TSV で出力します。見出しと値の書き方は [QUERY.md の書き出しの形](QUERY.md#書き出しの形) にあります。
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --where 'key ~ "UI_" and textStatus@ko = done' --format csv --columns text@ja,text@ko,textStatus@ko
+resource,key,text@ja,text@ko,textStatus@ko
+Assets/Text/system/ui.csv,UI_OK,決定,확인,done
+Assets/Text/system/ui.csv,UI_CANCEL,キャンセル,취소,done
+
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --where "text@ko is empty" --format csv --columns text@ja,text@ko --out /tmp/untranslated.csv --bom
+1 行を書き出しました: /tmp/untranslated.csv
+
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --format csv --group-by resource,issues@ko
+resource,issues@ko,rows,characters,words
+Assets/Text/chapter01.csv,none,5,50,6
+Assets/Text/chapter01.csv,warning,2,42,3
+Assets/Text/chapter01.csv,error,1,10,1
+Assets/Text/system/ui.csv,none,4,27,5
+```
+
+`--json` は、サービス層の `query` の結果（`{ "matched": { "rows", "characters", "words" }, "totalRows", "resources": [{ "resourceId", "path", "matched", "total" }], "unreadable", "groups", "rows" }`）をそのまま出します。`--format` と `--json` は、同時には指定できません。
+
+式や引数の誤りは、何が違うかを出して、終了コード 2 で終わります。読めないリソースがあると、`パス  (読めません: 理由)` と出て（`--json` では `unreadable`）、ほかのリソースは数え、終了コードは 1 です。
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --where "textStatus@ko = finished"
+条件式の "textStatus@ko = finished": 列 "textStatus" に選択肢 "finished" はありません（選べる値: todo, wip, done）。
+```
 
 ### generate
 
@@ -449,4 +531,5 @@ node apps/cli/dist/index.js validate --project . --fail-on error --json > valida
 - サーバー管理のコマンド（`server check`、`user add` / `list` / `set` / `passwd` / `delete`、`member set` / `list`、エラーになる場合を含む）は、一時フォルダの `server.json` と SQLite のサーバーの DB に対して実行しました。
 - `server check` は、Postgres のサーバーの DB（PostgreSQL 16）でも実行しました。ただし、出力に「プロジェクトを開く確認」の行が加わる前の版での実行で、いまの版ではやり直していません。
 - `entry add` / `rename` / `remove` と `resource create` の出力は、2026-11-15 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです。
+- `query` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです（`--where`、`--group-by`、`--limit`、`--columns`、`--format csv`、`--out`、`--bom`、誤った式）。集計の例は、先に `set textStatus@ko done --keys UI_OK,UI_CANCEL` を実行したあとの出力です。書き出し先のパスは、例に合わせて書き換えています。読めないリソースがある場合と、`--format tsv` は、テストで確かめただけです。
 - `save` の競合（終了コード 1）と、20 行を超えるアクションのジョブは、実行していません。説明はコードに基づきます。

@@ -402,3 +402,87 @@ describe("resource create", () => {
     await expect(readFile(path.join(project, "Assets", "Text", "new.txt"))).rejects.toThrow();
   });
 });
+
+describe("query", () => {
+  it("条件に合う行を、リソースごとに数える。原文の量も出す", async () => {
+    const r = await cli(["query"], ["--where", "issues >= error"]);
+    expect(r).toMatchObject({
+      code: 0,
+      stdout: ["条件に合う行: 5 / 12 行（原文 43 文字 / 6 語）", `  ${UI}: 1 / 4`, `  ${CHAPTER}: 4 / 8`, ""].join("\n"),
+    });
+    // 条件がなければ、すべての行。合う行のないリソースは並べない。
+    expect((await cli(["query"])).stdout).toContain("条件に合う行: 12 / 12 行");
+    const none = await cli(["query"], ["--where", "key = NOPE"]);
+    expect(none.stdout).toBe("条件に合う行: 0 / 12 行（原文 0 文字 / 0 語）\n");
+  });
+
+  it("--resources と --languages で対象を絞る（式の、言語を省いた欄は、対象の言語のどれか）", async () => {
+    const r = await cli(["query"], ["--where", "text is empty", "--resources", "**/chapter01.csv"]);
+    expect(r.stdout).toBe(`条件に合う行: 1 / 8 行（原文 8 文字 / 1 語）\n  ${CHAPTER}: 1 / 8\n`);
+    // 日本語には、空の本文がない。
+    expect((await cli(["query"], ["--where", "text is empty", "--languages", "ja"])).stdout).toContain("条件に合う行: 0 / 12 行");
+  });
+
+  it("--group-by で、欄の値ごとの行数と原文の量を出す（選択式の列は、選択肢の順と表示名）", async () => {
+    await cli(["set", "textStatus@ko", "done"], ["--resource", UI, "--keys", "UI_OK"]);
+    const r = await cli(["query"], ["--group-by", "textStatus@ko"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain(["", "集計（textStatus@ko）:", "  未着手: 11 行（127 文字 / 14 語）", "  確定: 1 行（2 文字 / 1 語）", ""].join("\n"));
+  });
+
+  it("--limit で行を出し、--columns で出すセルを選ぶ", async () => {
+    const r = await cli(["query"], ["--where", 'key ~ "UI_"', "--limit", "1", "--columns", "text@ja,text@ko"]);
+    expect(r.stdout).toBe(
+      ["条件に合う行: 4 / 12 行（原文 27 文字 / 5 語）", `  ${UI}: 4 / 4`, "", "行:", `  ${UI}  UI_OK`, "    text@ja: 決定", "    text@ko: 확인", "  …（4 行のうち 1 行。--limit で増やせます）", ""].join("\n"),
+    );
+  });
+
+  it("--format csv で、条件に合う行を CSV にして標準出力に出す", async () => {
+    const r = await cli(["query"], ["--where", 'key ~ "UI_"', "--format", "csv", "--columns", "text@ja,text@JaEnglish"]);
+    expect(r).toMatchObject({
+      code: 0,
+      stdout: ["resource,key,text@ja,text@JaEnglish", `${UI},UI_OK,決定,OK`, `${UI},UI_CANCEL,キャンセル,Cancel`, `${UI},UI_SAVE_CONFIRM,セーブしますか？,Save your progress?`, `${UI},UI_GOLD,所持金：{gold} G,Gold: {gold} G`, ""].join("\r\n"),
+    });
+  });
+
+  it("--out でファイルに書き、--bom で先頭に BOM を付ける。--group-by があれば集計を書き出す", async () => {
+    const out = path.join(tmp, "result.tsv");
+    const r = await cli(["query"], ["--where", "key = UI_OK", "--format", "tsv", "--columns", "text@ja", "--out", out, "--bom"]);
+    expect(r).toMatchObject({ code: 0, stdout: `1 行を書き出しました: ${out}\n` });
+    expect(await readFile(out, "utf8")).toBe(`\uFEFFresource\tkey\ttext@ja\r\n${UI}\tUI_OK\t決定\r\n`);
+    const groups = await cli(["query"], ["--format", "csv", "--group-by", "resource"]);
+    expect(groups.stdout).toBe(["resource,rows,characters,words", `${CHAPTER},8,102,10`, `${UI},4,27,5`, ""].join("\r\n"));
+  });
+
+  it("--json は、数、集計、行をそのまま出す", async () => {
+    const r = await cli(["query", "--json"], ["--where", "issues >= error", "--group-by", "resource", "--limit", "2", "--columns", "text@ja"]);
+    expect(r.code).toBe(0);
+    const data = JSON.parse(r.stdout) as { matched: { rows: number }; totalRows: number; groups: { values: unknown[]; rows: number }[]; rows: { path: string; key: string }[] };
+    expect(data.matched.rows).toBe(5);
+    expect(data.totalRows).toBe(12);
+    expect(data.groups.map((g) => [g.values[0], g.rows])).toEqual([
+      [CHAPTER, 4],
+      [UI, 1],
+    ]);
+    expect(data.rows.map((x) => [x.path, x.key])).toEqual([
+      [UI, "UI_SAVE_CONFIRM"],
+      [CHAPTER, "CH01_CHOICE_001A"],
+    ]);
+  });
+
+  it("式や引数の誤りは終了コード 2 で、何が違うかを出す", async () => {
+    const bad = await cli(["query"], ["--where", "nope = 1"]);
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain('条件式の "nope" に当たる列がありません');
+    const syntax = await cli(["query"], ["--where", "text@ko ="]);
+    expect(syntax.code).toBe(2);
+    expect(syntax.stderr).toContain("条件式の 10 文字目");
+    expect((await cli(["query"], ["--languages", "xx"])).code).toBe(2);
+    expect((await cli(["query"], ["--resources", "nope/**"])).stderr).toContain("--resources に合うリソースがありません");
+    expect((await cli(["query"], ["--format", "xlsx"])).stderr).toContain("--format は csv か tsv");
+    expect((await cli(["query"], ["--out", "x.csv"])).stderr).toContain("--format csv か --format tsv と一緒に");
+    expect((await cli(["query", "--json"], ["--format", "csv"])).code).toBe(2);
+    expect((await cli(["query"], ["--limit", "-1"])).code).toBe(2);
+    expect((await cli(["query"], ["--group-by", "textStatus"])).code).toBe(2);
+  });
+});

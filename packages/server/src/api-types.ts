@@ -219,13 +219,9 @@ export interface RowInfo {
   cells: Record<string, CellInfo>;
 }
 
-export interface RowsRequest {
-  resourceId: string;
-  /** 表示中の言語だけ読み込む。 */
-  languages: LanguageId[];
-  offset: number;
-  limit: number;
-  /** キーと、表示中の言語の本文の部分一致（大文字小文字を区別しない）。 */
+/** 行の絞り込みの条件（rows と query で同じ）。条件どうしは「かつ」。「または」や否定は where に書く。 */
+export interface RowFilter {
+  /** キーと、対象の言語の本文の部分一致（大文字小文字を区別しない）。 */
   search?: string;
   /**
    * 列の値での絞り込み。values: どれかの値と同じ（未設定は列の type.default とみなす）。
@@ -233,19 +229,95 @@ export interface RowsRequest {
    */
   filters?: { cellId: string; values?: unknown[]; contains?: string }[];
   /**
+   * 条件式。例: `textStatus@ja = done and (text@en is empty or issues@en >= warning)`。
+   * 欄は、行に 1 つの列は "列 ID"、言語ごとの列は "列 ID@言語 ID"（"@any" は対象の言語のどれか、"@all" はすべて。省くと "@any"）。
+   * 組み込みの欄は key、resource、issues、issueCode、stale、unsaved。比較は = != < <= > >= ~（含む）!~、`is empty`、`in (a, b)`。
+   * and / or / not とかっこでつなぐ。書き方は docs/QUERY.md。
+   */
+  where?: string;
+  /** 対象の言語のどれかの本文が空。 */
+  onlyUntranslated?: boolean;
+  /** 対象の言語のどれかに、この重さ以上の問題がある。 */
+  onlyIssues?: Severity;
+  /** 対象の言語のどれかに stale か needsRecheck のセルがある。 */
+  onlyStale?: boolean;
+  /** どれかの言語に未保存の本文がある。 */
+  onlyUnsaved?: boolean;
+}
+
+export interface RowsRequest extends RowFilter {
+  resourceId: string;
+  /** 表示中の言語だけ読み込む。絞り込みの「対象の言語」もこれ。 */
+  languages: LanguageId[];
+  offset: number;
+  limit: number;
+  /**
    * 並べ替え。cellId の列の値の順に並べる（省略時は、リソースの中の順）。dir の既定は "asc"。
    * 数値は数の順、選択式の列は選択肢の並び順、そのほかは文字の順（文字の中の数字は数として比べる）。
    * 値のない行は、昇順でも降順でも最後に置く。同じ値の行は、リソースの中の順のまま。
    */
   sort?: { cellId: string; dir?: "asc" | "desc" };
-  /** 表示中の言語のどれかの本文が空。 */
-  onlyUntranslated?: boolean;
-  /** 表示中の言語のどれかに、この重さ以上の問題がある。 */
-  onlyIssues?: Severity;
-  /** 表示中の言語のどれかに stale か needsRecheck のセルがある。 */
-  onlyStale?: boolean;
-  /** どれかの言語に未保存の本文がある。 */
-  onlyUnsaved?: boolean;
+}
+
+/** リソースをまたいで、条件に合う行を数え、集計し、一覧にする（query）。 */
+export interface QueryRequest extends RowFilter {
+  /** 対象のリソース。省略時は、見えるすべてのリソース。 */
+  resourceIds?: string[];
+  /** 対象の言語（絞り込みの "@any" / "@all" と、cells を省いたときに返す列の言語）。 */
+  languages: LanguageId[];
+  /** 行ごとに返すセル（セルの ID）。省略時は、languages のすべての列。 */
+  cells?: string[];
+  /**
+   * 集計の区切り。この欄の値ごとに、行数と原文の量を数える（複数書くと、値の組ごと）。
+   * 欄は where と同じ書き方で、1 つの値に決まるもの（"textStatus@ja"、"resource"、"issues@en" など。"@any" / "@all" は使えない）。
+   */
+  groupBy?: string[];
+  /** 返す行の位置と数（リソースの並び順、その中の行の順）。limit の既定は 0（行は返さず、数と集計だけ）。 */
+  offset?: number;
+  limit?: number;
+}
+
+/** 行数と、原文（最初の原文の言語の本文）の量。 */
+export interface QueryVolume {
+  rows: number;
+  characters: number;
+  words: number;
+}
+
+export interface QueryRow {
+  resourceId: string;
+  path: string;
+  key: string;
+  cells: Record<string, CellInfo>;
+}
+
+export interface QueryResponse {
+  /** 条件に合う行の合計。 */
+  matched: QueryVolume;
+  /** 対象のリソースの行の合計（条件を当てる前）。 */
+  totalRows: number;
+  /** リソースごとの、条件に合う行の数（対象のリソースすべて。合う行が 0 のものも入る）。 */
+  resources: { resourceId: string; path: string; matched: number; total: number }[];
+  /** 読めなかったリソース（ほかのリソースは続ける）。 */
+  unreadable: { resourceId: string; path: string; error: string }[];
+  /** groupBy を書いたときの集計。values は groupBy と同じ順、labels は表示名（選択式の列の表示名など）。 */
+  groups?: (QueryVolume & { values: unknown[]; labels: string[] })[];
+  rows: QueryRow[];
+}
+
+/** 条件に合う行、または集計を、CSV / TSV の文字列にする（exportQuery）。 */
+export interface ExportQueryRequest extends Omit<QueryRequest, "offset" | "limit"> {
+  format: "csv" | "tsv";
+  /** rows: 行の一覧（既定）。groups: groupBy の集計。 */
+  table?: "rows" | "groups";
+}
+
+export interface ExportQueryResponse {
+  text: string;
+  /** 見出しを除いた行数。 */
+  rows: number;
+  /** true: 行数の上限で打ち切った。 */
+  truncated: boolean;
 }
 
 export interface RowsResponse {
@@ -441,6 +513,10 @@ export interface WorkspaceApi {
   /** 保存せずに本文を確かめる（入力中の確認用）。何も保存しない。 */
   validateText(params: { resourceId: string; key: string; language: LanguageId; value: string }): Promise<IssueInfo[]>;
   search(params: { query: string; languages?: LanguageId[]; limit?: number }): Promise<SearchHit[]>;
+  /** リソースをまたいで、条件に合う行を数え、集計し、一覧にする。ツリーの件数、検索ビュー、コマンドラインの query が使う。 */
+  query(req: QueryRequest): Promise<QueryResponse>;
+  /** query の結果を CSV / TSV の文字列にする。 */
+  exportQuery(req: ExportQueryRequest): Promise<ExportQueryResponse>;
   /**
    * 本文を、そのリソースの記法（TextSyntax）でトークンに分ける。texts と同じ順・同じ数で返す。
    * 画面が変数やタグを色分けしたり、原文の変数を訳文に差し込んだりするのに使う。
@@ -463,6 +539,11 @@ export interface WorkspaceApi {
   jobs(params?: NoParams): Promise<JobInfo[]>;
   job(params: { id: string }): Promise<JobInfo>;
   changes(params: { since: number }): Promise<{ changeSeq: number; changed: boolean; localSeq: number }>;
+  /**
+   * 画面の状態（開いていたリソース、絞り込み、並べ替え、列の表示、お気に入りの条件など）。その PC の DB に、
+   * プロジェクトごと・利用者ごとに置く。中身は画面が決める。保存したことがなければ null。
+   */
+  uiState(params?: NoParams): Promise<{ state: Record<string, unknown> | null }>;
 
   // 書き込み
   setText(params: SetTextParams): Promise<{ cell: CellInfo; unsaved: number }>;
@@ -498,6 +579,8 @@ export interface WorkspaceApi {
   /** 新しいリソース（行のない状態）を作る。ツリーとフォーマットが作成に対応しているときだけ。 */
   createResource(params: { path: string }): Promise<{ resource: ResourceRef }>;
   setLocalSetting(params: { key: string; value: unknown }): Promise<SettingInfo[]>;
+  /** 画面の状態を保存する（null で消す）。自分の状態だけを変える。 */
+  setUiState(params: { state: Record<string, unknown> | null }): Promise<{ saved: boolean }>;
   updateProjectSettings(params: { patch: Record<string, unknown> }): Promise<ProjectInfo>;
   reloadPlugins(params?: NoParams): Promise<ProjectInfo>;
   /**
@@ -539,12 +622,16 @@ export const WORKSPACE_METHODS = [
   "textVersion",
   "validateText",
   "search",
+  "query",
+  "exportQuery",
   "tokens",
   "settings",
   "plugins",
   "jobs",
   "job",
   "changes",
+  "uiState",
+  "setUiState",
   "setText",
   "discardDrafts",
   "save",

@@ -2,33 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ActionInfo } from "@loc-studio/server";
 import { Chip } from "@/components/EnumSelect";
+import type { ToolbarFilters } from "@/lib/client/filters";
 import { cellIdOf, columnAppliesTo, columnLabel, enumOptions, gridKind, SEVERITY_LABEL, type ColumnDef, type LanguageDef, type Severity } from "@/lib/client/model";
 
 /* ツールバー: 検索、列の値での絞り込み、切り替え、言語の選択、表示密度、保存。 */
 
-export interface ToolbarFilters {
-  search: string;
-  values: Record<string, string[]>;
-  /** 文字・数値の列の「含む」絞り込み（セルの ID → 探す文字列）。 */
-  contains: Record<string, string>;
-  onlyUntranslated: boolean;
-  onlyIssues: boolean;
-  /** 「問題あり」で数える重さ（これ以上の問題がある行）。 */
-  issueLevel: Severity;
-  onlyStale: boolean;
-  onlyUnsaved: boolean;
-}
-
-export const EMPTY_FILTERS: ToolbarFilters = {
-  search: "",
-  values: {},
-  contains: {},
-  onlyUntranslated: false,
-  onlyIssues: false,
-  issueLevel: "warning",
-  onlyStale: false,
-  onlyUnsaved: false,
-};
+export { EMPTY_FILTERS, type ToolbarFilters } from "@/lib/client/filters";
 
 export interface ToolbarProps {
   columns: ColumnDef[];
@@ -56,6 +35,10 @@ export interface ToolbarProps {
   /** 編集できないときの理由（読み取り専用など）。 */
   editDisabledReason?: string | undefined;
   runDisabledReason?: string | undefined;
+  /** 検索欄のとなりに置く操作（条件、お気に入り）。 */
+  findControls?: React.ReactNode;
+  /** 言語のボタンのとなりに置く操作（検索ビュー、列の表示）。 */
+  viewControls?: React.ReactNode;
 }
 
 function ActionsMenu({ actions, onRun, disabledReason }: { actions: ActionInfo[]; onRun(a: ActionInfo): void; disabledReason?: string | undefined }) {
@@ -286,6 +269,7 @@ export function Toolbar(props: ToolbarProps) {
           if (e.key === "Enter") onFilters({ ...filters, search });
         }}
       />
+      {props.findControls}
       <span className="tb-sep" />
       {enumCols.map((c) => (
         <FilterPopover
@@ -334,6 +318,7 @@ export function Toolbar(props: ToolbarProps) {
       <button type="button" className="btn small" onClick={props.onReload} title="リソースを読み直す（外部で書き換えたとき）">
         再読み込み
       </button>
+      {props.viewControls}
       <button type="button" className="btn small" onClick={props.onOpenLanguages} aria-label={`言語の表示を選ぶ（${props.visibleLanguages.length} / ${props.languages.length}）`}>
         言語 {props.visibleLanguages.length} / {props.languages.length}
       </button>

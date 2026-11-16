@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 
-export const COMMANDS = ["plugins", "tree", "validate", "whoami", "generate", "run", "status", "save", "set", "entry", "resource", "user", "member", "server", "help"] as const;
+export const COMMANDS = ["plugins", "tree", "validate", "whoami", "generate", "run", "status", "query", "save", "set", "entry", "resource", "user", "member", "server", "help"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export type FailOn = "error" | "warning" | "info" | "never";
@@ -44,6 +44,20 @@ export interface CliOptions {
   generate: boolean;
   yes: boolean;
   role?: string;
+  /** query: 条件式。 */
+  where?: string;
+  /** query: 集計の区切り（欄）。 */
+  groupBy?: string[];
+  /** query: 出力するセル（セルの ID）。 */
+  columns?: string[];
+  /** query: csv / tsv で書き出す（省略時は、読むための表示）。 */
+  format?: "csv" | "tsv";
+  /** query: 書き出し先のファイル（省略時は標準出力）。 */
+  out?: string;
+  /** query: 書き出すファイルの先頭に BOM を付ける。 */
+  bom: boolean;
+  /** query: 表示する行の数。 */
+  limit?: number;
 }
 
 /** 使い方の誤り。終了コード 2 で、メッセージだけを表示する。 */
@@ -59,6 +73,7 @@ const COMMAND_ARITY: Record<Command, { count: number; names: string }> = {
   generate: { count: 1, names: "<columnId>" },
   run: { count: 1, names: "<actionId>" },
   status: { count: 0, names: "" },
+  query: { count: 0, names: "" },
   save: { count: 0, names: "" },
   set: { count: 2, names: "<cellId> <value>" },
   entry: { count: 0, names: "" },
@@ -113,6 +128,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   generate: ["languages", "resources", "dry-run", "user"],
   run: ["languages", "resources", "keys", "column", "user"],
   status: ["languages", "resources", "user"],
+  query: ["languages", "resources", "where", "group-by", "columns", "format", "out", "bom", "limit", "user"],
   save: ["user"],
   set: ["resource", "keys", "user"],
   "entry add": ["resource", "after", "text", "user"],
@@ -158,6 +174,13 @@ export function parseCliArgs(argv: string[]): CliOptions {
         generate: { type: "boolean" },
         yes: { type: "boolean" },
         role: { type: "string" },
+        where: { type: "string" },
+        "group-by": { type: "string" },
+        columns: { type: "string" },
+        format: { type: "string" },
+        out: { type: "string" },
+        bom: { type: "boolean" },
+        limit: { type: "string" },
       },
     });
   } catch (err) {
@@ -231,7 +254,24 @@ export function parseCliArgs(argv: string[]): CliOptions {
     passwordStdin: values["password-stdin"] === true,
     generate: values.generate === true,
     yes: values.yes === true,
+    bom: values.bom === true,
   };
+  const list = (value: string): string[] => value.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (values.where !== undefined) options.where = values.where;
+  if (values["group-by"] !== undefined) options.groupBy = list(values["group-by"]);
+  if (values.columns !== undefined) options.columns = list(values.columns);
+  if (values.format !== undefined) {
+    if (values.format !== "csv" && values.format !== "tsv") throw new UsageError(`--format は csv か tsv を指定してください: ${values.format}`);
+    options.format = values.format;
+  }
+  if (values.out !== undefined) options.out = values.out;
+  if (values.limit !== undefined) {
+    const n = Number(values.limit);
+    if (!Number.isInteger(n) || n < 0) throw new UsageError(`--limit には 0 以上の整数を指定してください: ${values.limit}`);
+    options.limit = n;
+  }
+  if ((options.out !== undefined || options.bom) && options.format === undefined) throw new UsageError("--out と --bom は、--format csv か --format tsv と一緒に指定してください。");
+  if (options.format !== undefined && options.json) throw new UsageError("--format と --json は同時に指定できません。");
   if (sub !== undefined) options.sub = sub;
   if (values["data-dir"] !== undefined) options.dataDir = values["data-dir"];
   if (values["server-config"] !== undefined) options.serverConfig = values["server-config"];
@@ -309,6 +349,7 @@ export const USAGE = `loc-studio — ゲーム向けローカライゼーショ�
   generate <columnId>      生成列（逆翻訳など）をプロジェクト全体または一部に実行する（失敗があれば終了コード 1）
   run <actionId>           アクションをリソースに対して実行する（失敗があれば終了コード 1）
   status     リソースごとの件数、未保存、問題、列ごと・言語ごとの進捗を表示する
+  query      条件に合う行を、リソースをまたいで数え、集計し、CSV / TSV に書き出す
   save       未保存の本文をすべてリソースに書く（競合があれば終了コード 1）
   set <cellId> <値>        セルの値を複数行へ一括で設定する（例: set textStatus@ko done --resource Assets/Text/chapter01.csv --keys A,B）
   entry <add|remove|rename>  行を足す・消す・キーを変える（すぐリソースに書く）
@@ -345,6 +386,17 @@ run のオプション:
   --keys <k1,k2>          対象のキー（cell / row / selection 対象。省略時は全行）
   --column <id>           cell / column 対象のアクションで使う列（省略時はアクションの columns）
 
+query のオプション:
+  --where <式>            条件式（例: "textStatus@ko = done and text@ko is empty"。書き方は docs/QUERY.md）。省略時はすべての行
+  --resources <glob>      対象のリソース
+  --languages <a,b>       対象の言語 ID（式の "@any" / "@all" と、出力する列の言語。省略時はすべての言語）
+  --group-by <欄,欄>      集計の区切り（例: textStatus@ko、resource、issues@ko）。値ごとの行数と原文の量を出す
+  --limit <n>             表示する行の数（既定: 0。数と集計だけを出す）
+  --format <csv|tsv>      条件に合う行（--group-by があれば集計）を、CSV / TSV で出力する
+  --columns <a,b>         出力するセルの ID（例: text@ja,text@ko,textStatus@ko。省略時は、対象の言語のすべての列）
+  --out <file>            --format の出力先のファイル（省略時は標準出力）
+  --bom                   --format の出力の先頭に BOM を付ける（表計算ソフトで開くとき）
+
 set のオプション:
   --resource <path>       対象のリソース（パスまたは ID）。必須
   --keys <k1,k2>          対象のキー。必須
@@ -380,7 +432,7 @@ member のオプション:
   member set <project> <user> --role <役割の ID> [--languages a,b]
   member remove <project> <user>
 
-generate / run / status / save / set は、画面と同じサービス層を通るので、キャッシュと履歴を画面と共有する。
+generate / run / status / query / save / set は、画面と同じサービス層を通るので、キャッシュと履歴を画面と共有する。
 どれも --user <name> で記録に残すユーザー名を指定できる（履歴の by）。値が - で始まるときは -- の後ろに書く。
 
 環境変数:

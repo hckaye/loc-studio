@@ -11,6 +11,17 @@ describe("表の列の組み立て", () => {
     expect(l.groups[2]!.columns.map((c) => c.cellId)).toEqual(["text@en", "status@en", "review@en", "back@en", "tools@en"]);
     expect(l.frozen.map((c) => c.cellId)).toEqual(["key", "note", "maxLen"]);
   });
+  it("隠した列は出さない。キーの列は隠せず、列をすべて隠した言語はグループごと出さない", () => {
+    const base = { info, visibleLanguages: ["ja", "en"], pinnedLanguages: [], widths: {}, viewportWidth: 0 };
+    const l = buildLayout({ ...base, hiddenColumns: ["note", "status", "key"] });
+    expect(l.frozen.map((c) => c.cellId)).toEqual(["key", "maxLen"]);
+    expect(l.groups[1]!.columns.map((c) => c.cellId)).toEqual(["text@ja", "review@ja", "tools@ja"]);
+    expect(l.groups[2]!.columns.map((c) => c.cellId)).toEqual(["text@en", "review@en", "back@en", "tools@en"]);
+    // 日本語にある列をすべて隠すと、日本語のグループはなくなる（英語には、英語だけの列が残る）。
+    const none = buildLayout({ ...base, hiddenColumns: ["text", "status", "review", "tools"] });
+    expect(none.groups.map((g) => g.id)).toEqual(["@common", "lang:en"]);
+    expect(none.groups[1]!.columns.map((c) => c.cellId)).toEqual(["back@en"]);
+  });
   it("ピン留めした言語は固定側に並び、幅の上限を超えたら後ろから外す", () => {
     expect(initialPins(info)).toEqual(["ja"]);
     const wide = buildLayout({ info, visibleLanguages: ["ja", "en"], pinnedLanguages: ["ja", "en"], widths: {}, viewportWidth: 3000 });

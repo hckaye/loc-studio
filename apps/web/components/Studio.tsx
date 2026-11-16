@@ -14,12 +14,15 @@ import {
   textColumnOf,
   type GridColumn,
 } from "@/lib/client/model";
-import { loadPrefs, savePrefs, type GridPrefs } from "@/lib/client/prefs";
+import { EMPTY_FILTERS, normalizeFilters, toRowFilter, type ToolbarFilters } from "@/lib/client/filters";
+import { loadPrefs, prefsFromServer, savePrefs, type Favorite, type GridPrefs, type LastState, type SortState, type TreeViewState } from "@/lib/client/prefs";
 import { StudioProvider, useToasts } from "@/components/context";
 import { Grid, selectedRowRange, type GridHandle, type Selection } from "@/components/grid/Grid";
 import { useRowPages, type RowQuery } from "@/components/grid/useRowPages";
 import { ResourceTree } from "@/components/ResourceTree";
-import { EMPTY_FILTERS, Toolbar, type ToolbarFilters } from "@/components/Toolbar";
+import { Toolbar } from "@/components/Toolbar";
+import { ColumnsMenu, FavoritesMenu, QueryPanel } from "@/components/FindBar";
+import { SearchView } from "@/components/SearchView";
 import { EditModal } from "@/components/EditModal";
 import { ReviewPanel } from "@/components/ReviewPanel";
 import { ConflictDialog } from "@/components/ConflictDialog";
@@ -106,12 +109,40 @@ export function Studio({ api, project, initialInfo, onCloseProject, web, rendere
   const mode = web ? ("web" as const) : ("local" as const);
   const studio = useMemo(() => ({ api, project, info, setInfo, mode }), [api, project, info, mode]);
   const loader = useMemo(() => rendererLoader ?? defaultRendererLoader(project), [rendererLoader, project]);
+  // 画面の状態（前回開いていたリソース、絞り込み、列の表示など）を、サーバー側から読んでから表を出す。
+  // 読めなければ（保存したことがない、古いサーバーなど）、ブラウザに覚えていたものを使う。
+  const [initialPrefs, setInitialPrefs] = useState<GridPrefs | undefined>(undefined);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  useEffect(() => {
+    let cancelled = false;
+    apiRef.current
+      .uiState()
+      .then(
+        (r) => prefsFromServer(r.state),
+        () => undefined,
+      )
+      .then((fromServer) => {
+        if (!cancelled) setInitialPrefs(fromServer ?? loadPrefs(project));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project]);
+  if (!initialPrefs) {
+    return (
+      <div className="app-loading" role="status">
+        読み込み中…
+      </div>
+    );
+  }
   return (
     <StudioProvider value={studio}>
       <RendererProvider loader={loader} renderers={info.renderers ?? []}>
         <StudioInner
           api={api}
           project={project}
+          initialPrefs={initialPrefs}
           info={info}
           setInfo={setInfo}
           trustContinued={trustContinued === true}
@@ -128,6 +159,7 @@ export function Studio({ api, project, initialInfo, onCloseProject, web, rendere
 function StudioInner({
   api,
   project,
+  initialPrefs,
   info,
   setInfo,
   onCloseProject,
@@ -138,6 +170,8 @@ function StudioInner({
 }: {
   api: ClientApi;
   project: string;
+  /** 前回の画面の状態（最初の表示に使う）。 */
+  initialPrefs: GridPrefs;
   info: ProjectInfo;
   setInfo(i: ProjectInfo): void;
   onCloseProject?(): void;
@@ -150,8 +184,31 @@ function StudioInner({
   const langIds = useMemo(() => info.languages.map((l) => l.id), [info.languages]);
 
   // ---- 画面の状態（プロジェクトごとに覚える）
-  const [prefs, setPrefs] = useState<GridPrefs>(() => loadPrefs(project));
+  const [prefs, setPrefs] = useState<GridPrefs>(initialPrefs);
   useEffect(() => savePrefs(project, prefs), [project, prefs]);
+  // サーバー側（その PC の DB）にも保存する。アプリを起動し直したときは、ここから戻す。変更が続くあいだは待って、まとめて送る。
+  const savedPrefsRef = useRef(prefs);
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const flushPrefs = useCallback(() => {
+    if (savedPrefsRef.current === prefsRef.current) return;
+    savedPrefsRef.current = prefsRef.current;
+    // 保存できなくても作業は続けられるので、通知は出さない。
+    api.setUiState({ state: prefsRef.current as unknown as Record<string, unknown> }).catch((err: unknown) => console.warn("画面の状態を保存できませんでした", err));
+  }, [api]);
+  useEffect(() => {
+    if (savedPrefsRef.current === prefs) return;
+    const t = setTimeout(flushPrefs, 400);
+    return () => clearTimeout(t);
+  }, [prefs, flushPrefs]);
+  useEffect(() => {
+    // 画面を閉じる直前の変更も送る。
+    window.addEventListener("pagehide", flushPrefs);
+    return () => window.removeEventListener("pagehide", flushPrefs);
+  }, [flushPrefs]);
+  /** 前回の状態（開いていたリソース、絞り込み、並べ替え、位置）。最初の表示にだけ使う。 */
+  const lastRef = useRef<LastState>(initialPrefs.last ?? {});
+  const hiddenColumns = useMemo(() => prefs.hiddenColumns ?? [], [prefs.hiddenColumns]);
   const visibleLanguages = useMemo(() => {
     const v = prefs.visibleLanguages?.filter((id) => langIds.includes(id));
     return v && v.length > 0 ? v : langIds.slice(0, DEFAULT_VISIBLE_MAX);
@@ -164,8 +221,8 @@ function StudioInner({
   const [viewportWidth, setViewportWidth] = useState(0);
 
   const layout = useMemo(
-    () => buildLayout({ info, visibleLanguages, pinnedLanguages: pins, partialPins, widths, viewportWidth }),
-    [info, visibleLanguages, pins, partialPins, widths, viewportWidth],
+    () => buildLayout({ info, visibleLanguages, pinnedLanguages: pins, partialPins, widths, viewportWidth, hiddenColumns }),
+    [info, visibleLanguages, pins, partialPins, widths, viewportWidth, hiddenColumns],
   );
 
   // ---- ツリーとリソース
@@ -184,7 +241,9 @@ function StudioInner({
   }, [api, reportError]);
   useEffect(() => {
     void loadTree().then((t) => {
-      if (t) setResourceId((cur) => cur ?? firstResource(t));
+      // 前回開いていたリソースがまだあれば、それを開く。
+      const wanted = lastRef.current.resourceId;
+      if (t) setResourceId((cur) => cur ?? (wanted !== undefined && findNode(t, wanted) ? wanted : firstResource(t)));
     });
   }, [loadTree]);
 
@@ -195,44 +254,106 @@ function StudioInner({
   }, [themeSetting]);
 
   // ---- 行
-  const [filters, setFilters] = useState<ToolbarFilters>(EMPTY_FILTERS);
-  // 並べ替え。リソースを切り替えたら、リソースの中の順に戻す。
-  const [sort, setSort] = useState<{ cellId: string; dir: "asc" | "desc" } | null>(null);
-  useEffect(() => setSort(null), [resourceId]);
+  const [filters, setFilters] = useState<ToolbarFilters>(() => normalizeFilters(lastRef.current.filters));
+  // 表（リソース 1 つ）か、検索ビュー（プロジェクト全体の結果）か。
+  const [view, setView] = useState<"grid" | "search">(lastRef.current.view === "search" ? "search" : "grid");
+  const [groupBy, setGroupBy] = useState<string[]>(() => (Array.isArray(lastRef.current.groupBy) ? lastRef.current.groupBy.filter((g) => typeof g === "string").slice(0, 2) : []));
+  // 並べ替え。リソースを切り替えたら、リソースの中の順に戻す（最初に開いたリソースでは、前回の並べ替えを保つ）。
+  const [sort, setSort] = useState<SortState | null>(() => {
+    const v = lastRef.current.sort;
+    return v && typeof v.cellId === "string" && (v.dir === "asc" || v.dir === "desc") ? { cellId: v.cellId, dir: v.dir } : null;
+  });
+  const sortResourceRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = sortResourceRef.current;
+    sortResourceRef.current = resourceId;
+    if (prev !== undefined && prev !== resourceId) setSort(null);
+  }, [resourceId]);
   /** 列見出しを押すたびに、昇順、降順、解除の順に切り替える。 */
   const toggleSort = useCallback((gc: GridColumn) => {
     setSort((cur) => (cur?.cellId !== gc.cellId ? { cellId: gc.cellId, dir: "asc" } : cur.dir === "asc" ? { cellId: gc.cellId, dir: "desc" } : null));
   }, []);
+  /** サービス層に送る絞り込みの条件（表、ツリーの件数、検索ビューで同じもの）。 */
+  const rowFilter = useMemo(() => toRowFilter(filters, visibleLanguages), [filters, visibleLanguages]);
   const query: RowQuery | null = useMemo(() => {
     if (!resourceId) return null;
-    // 表示していない言語の列の条件は送らない。
     const shown = (cellId: string): boolean => !cellId.includes("@") || visibleLanguages.includes(cellId.split("@")[1]!);
-    const vf: { cellId: string; values?: string[]; contains?: string }[] = [
-      ...Object.entries(filters.values)
-        .filter(([cellId, vals]) => vals.length > 0 && shown(cellId))
-        .map(([cellId, values]) => ({ cellId, values })),
-      ...Object.entries(filters.contains)
-        .filter(([cellId, text]) => text !== "" && shown(cellId))
-        .map(([cellId, contains]) => ({ cellId, contains })),
-    ];
     return {
       resourceId,
       languages: visibleLanguages,
-      ...(filters.search.trim() ? { search: filters.search.trim() } : {}),
-      ...(vf.length ? { filters: vf } : {}),
-      ...(filters.onlyUntranslated ? { onlyUntranslated: true } : {}),
-      ...(filters.onlyIssues ? { onlyIssues: filters.issueLevel } : {}),
-      ...(filters.onlyStale ? { onlyStale: true } : {}),
-      ...(filters.onlyUnsaved ? { onlyUnsaved: true } : {}),
+      ...rowFilter,
       // 表示していない言語の列での並べ替えは外す。
       ...(sort && shown(sort.cellId) ? { sort } : {}),
     };
-  }, [resourceId, visibleLanguages, filters, sort]);
-  const onRowsError = useCallback((err: unknown) => reportError(err, "行の読み込み"), [reportError]);
+  }, [resourceId, visibleLanguages, rowFilter, sort]);
+  // 絞り込んでいるあいだは、条件に合う行の数をツリーに出す。
+  const treeMatch = useMemo(() => (Object.keys(rowFilter).length > 0 ? { ...rowFilter, languages: visibleLanguages } : undefined), [rowFilter, visibleLanguages]);
+  // 前回の絞り込みや並べ替えが、いまの設定に合わなくなっていたら（列がなくなったなど）、外して続ける。
+  const restoredRef = useRef(Object.keys(toRowFilter(normalizeFilters(lastRef.current.filters), langIds)).length > 0 || lastRef.current.sort != null);
+  const onRowsError = useCallback(
+    (err: unknown) => {
+      if (restoredRef.current && (isRpcError(err, "invalid") || isRpcError(err, "not-found"))) {
+        restoredRef.current = false;
+        setFilters(EMPTY_FILTERS);
+        setSort(null);
+        push("warning", "前回の絞り込みと並べ替えが、いまの設定に合わないため外しました。");
+        return;
+      }
+      reportError(err, "行の読み込み");
+    },
+    [reportError, push],
+  );
   const rows = useRowPages(api, query, onRowsError);
+  useEffect(() => {
+    if (rows.loaded) restoredRef.current = false;
+  }, [rows.loaded]);
 
-  const [selection, setSelection] = useState<Selection>({ row: 0, col: 0, anchor: 0 });
-  useEffect(() => setSelection({ row: 0, col: 0, anchor: 0 }), [resourceId]);
+  // 選んでいるセルとスクロールの位置。最初に開いたリソースが前回と同じなら、前回の位置から始める。
+  const [selection, setSelection] = useState<Selection>(() => {
+    const sc = lastRef.current.scroll;
+    return sc && Number.isInteger(sc.row) && Number.isInteger(sc.col) && sc.row >= 0 && sc.col >= 0 ? { row: sc.row, col: sc.col, anchor: sc.row } : { row: 0, col: 0, anchor: 0 };
+  });
+  const [restoreScroll, setRestoreScroll] = useState(lastRef.current.scroll);
+  const scrollPosRef = useRef({ top: lastRef.current.scroll?.top ?? 0, left: lastRef.current.scroll?.left ?? 0 });
+  const [scrollTick, setScrollTick] = useState(0);
+  const onGridScrolled = useCallback((top: number, left: number) => {
+    scrollPosRef.current = { top, left };
+    setScrollTick((t) => t + 1);
+  }, []);
+  const selectionResourceRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = selectionResourceRef.current;
+    selectionResourceRef.current = resourceId;
+    if (prev === undefined) {
+      // 最初に開いたリソースが前回と違えば、前回の位置は使わない。
+      if (resourceId !== undefined && lastRef.current.scroll?.resourceId !== resourceId) {
+        setSelection({ row: 0, col: 0, anchor: 0 });
+        setRestoreScroll(undefined);
+        scrollPosRef.current = { top: 0, left: 0 };
+      }
+      return;
+    }
+    if (prev === resourceId) return;
+    setSelection({ row: 0, col: 0, anchor: 0 });
+    setRestoreScroll(undefined);
+    scrollPosRef.current = { top: 0, left: 0 };
+  }, [resourceId]);
+  // ツリーの見え方（たたんだフォルダ、名前の絞り込み、「該当ありだけ」）。
+  const [treeView, setTreeView] = useState<TreeViewState | undefined>(lastRef.current.tree);
+  // いまの状態を、前回の状態として覚える（開いているリソース、絞り込み、並べ替え、画面、位置、ツリーの見え方）。
+  useEffect(() => {
+    if (!resourceId) return;
+    const last: LastState = {
+      resourceId,
+      filters,
+      sort,
+      view,
+      groupBy,
+      ...(treeView ? { tree: treeView } : {}),
+      scroll: { resourceId, top: scrollPosRef.current.top, left: scrollPosRef.current.left, row: selection.row, col: selection.col },
+    };
+    setPrefs((p) => ({ ...p, last }));
+  }, [resourceId, filters, sort, view, groupBy, selection.row, selection.col, scrollTick, treeView]);
   const gridRef = useRef<GridHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -493,6 +614,10 @@ function StudioInner({
     if (!rows.loaded) return;
     setSelection((s) => (s.row < rows.total ? s : { ...s, row: Math.max(0, rows.total - 1), anchor: Math.max(0, rows.total - 1) }));
   }, [rows.total, rows.loaded]);
+  // 列を隠したり言語を減らしたりして列が減ったら、選択を残っている列に戻す
+  useEffect(() => {
+    setSelection((s) => (s.col < layout.all.length ? s : { ...s, col: Math.max(0, layout.all.length - 1) }));
+  }, [layout.all.length]);
 
   // ---- 言語の表示とピン
   const updatePrefs = useCallback((patch: Partial<GridPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
@@ -520,17 +645,26 @@ function StudioInner({
 
 
   // ---- 横断検索の結果へ移る
-  const [pendingJump, setPendingJump] = useState<SearchHit | null>(null);
+  // index: 絞り込みを保ったまま移るときの、そのリソースで条件に合う行のうち何番目か（検索ビューから）。
+  const [pendingJump, setPendingJump] = useState<(SearchHit & { index?: number }) | null>(null);
   const jumpTo = useCallback(
     (hit: SearchHit) => {
       if (hit.language && !visibleLanguages.includes(hit.language)) updatePrefs({ visibleLanguages: [...visibleLanguages, hit.language] });
       // 絞り込みがあると行が見つからないことがあるので外す
       setFilters(EMPTY_FILTERS);
+      setView("grid");
       setResourceId(hit.resourceId);
       setPendingJump(hit);
     },
     [visibleLanguages, updatePrefs],
   );
+  /** 検索ビューの結果の行へ移る。絞り込みは保つ（並べ替えは、行の位置を決めるために外す）。 */
+  const jumpToMatch = useCallback((target: { resourceId: string; key: string; index: number }) => {
+    setSort(null);
+    setView("grid");
+    setResourceId(target.resourceId);
+    setPendingJump({ resourceId: target.resourceId, key: target.key, snippet: target.key, index: target.index });
+  }, []);
   useEffect(() => {
     const hit = pendingJump;
     if (!hit || resourceId !== hit.resourceId || !rows.loaded || !query) return;
@@ -538,8 +672,8 @@ function StudioInner({
     setPendingJump(null);
     void (async () => {
       try {
-        const d = await api.rowDetail({ resourceId: hit.resourceId, key: hit.key });
-        let idx = d.row.index;
+        // 絞り込みを保って移るときは、条件に合う行の中での位置。そうでなければ、リソースの中での位置。
+        let idx = hit.index ?? (await api.rowDetail({ resourceId: hit.resourceId, key: hit.key })).row.index;
         const r = await rowsRef.current.loadRow(idx);
         if (r?.key !== hit.key) idx = rowsRef.current.findIndex(hit.key);
         if (idx < 0) {
@@ -558,6 +692,43 @@ function StudioInner({
       }
     })();
   }, [pendingJump, resourceId, rows.loaded, query, layout, api, push, reportError]);
+
+  // ---- お気に入りの条件（この PC に保存）
+  const favorites = useMemo(() => prefs.favorites ?? [], [prefs.favorites]);
+  const saveFavorite = useCallback(
+    (name: string, includeColumns: boolean) => {
+      const favorite: Favorite = { id: name, name, filters, sort, view, groupBy, ...(includeColumns ? { columns: { hidden: hiddenColumns, languages: visibleLanguages } } : {}) };
+      // 同じ名前があれば置き換える。
+      updatePrefs({ favorites: [...favorites.filter((f) => f.name !== name), favorite] });
+      push("success", `お気に入り「${name}」を保存しました`);
+    },
+    [filters, sort, view, groupBy, hiddenColumns, visibleLanguages, favorites, updatePrefs, push],
+  );
+  const applyFavorite = useCallback(
+    (f: Favorite) => {
+      setFilters(normalizeFilters(f.filters));
+      setSort(f.sort && typeof f.sort.cellId === "string" ? f.sort : null);
+      setView(f.view === "search" ? "search" : "grid");
+      setGroupBy(Array.isArray(f.groupBy) ? f.groupBy.slice(0, 2) : []);
+      if (f.columns) {
+        const languages = f.columns.languages.filter((l) => langIds.includes(l));
+        updatePrefs({ hiddenColumns: f.columns.hidden, ...(languages.length > 0 ? { visibleLanguages: languages } : {}) });
+      }
+    },
+    [langIds, updatePrefs],
+  );
+  /** 条件式をサーバーで確かめる（リソースは読まない）。正しければ null。 */
+  const validateWhere = useCallback(
+    async (where: string): Promise<string | null> => {
+      try {
+        await api.query({ languages: visibleLanguages, resourceIds: [], where, limit: 0 });
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
+    [api, visibleLanguages],
+  );
 
   const resourceNames = useMemo(() => {
     const map = new Map<string, string>();
@@ -687,6 +858,9 @@ function StudioInner({
           selected={resourceId}
           onSelect={setResourceId}
           statsToken={statsToken}
+          match={treeMatch}
+          initialView={lastRef.current.tree}
+          onViewChange={setTreeView}
           onError={(err) => reportError(err, "進捗の読み込み")}
           onCreate={() => setStructure({ kind: "resource", ...(resourceId ? { near: resourceId } : {}) })}
           createDisabledReason={canStructure(info).reason}
@@ -726,8 +900,44 @@ function StudioInner({
             structureDisabledReason={canStructure(info).reason}
             editDisabledReason={canEdit(info).reason}
             runDisabledReason={canRun(info).reason}
+            findControls={
+              <>
+                <QueryPanel info={info} where={filters.where} builder={filters.builder} onApply={(where, builder) => setFilters((f) => ({ ...f, where, builder }))} validate={validateWhere} />
+                <FavoritesMenu
+                  favorites={favorites}
+                  onApply={applyFavorite}
+                  onSave={saveFavorite}
+                  onDelete={(id) => updatePrefs({ favorites: favorites.filter((f) => f.id !== id) })}
+                />
+              </>
+            }
+            viewControls={
+              <>
+                <button
+                  type="button"
+                  className={`btn small${view === "search" ? " on" : ""}`}
+                  aria-pressed={view === "search"}
+                  title="いまの絞り込みに合う行を、すべてのリソースから集めて見る（件数、集計、CSV への書き出し）"
+                  onClick={() => setView((v) => (v === "search" ? "grid" : "search"))}
+                >
+                  検索ビュー
+                </button>
+                <ColumnsMenu
+                  columns={info.columns}
+                  hidden={hiddenColumns}
+                  onChange={(hidden) => updatePrefs({ hiddenColumns: hidden })}
+                  sets={prefs.columnSets ?? {}}
+                  onSaveSet={(name) => updatePrefs({ columnSets: { ...(prefs.columnSets ?? {}), [name]: hiddenColumns } })}
+                  onDeleteSet={(name) => {
+                    const next = { ...(prefs.columnSets ?? {}) };
+                    delete next[name];
+                    updatePrefs({ columnSets: next });
+                  }}
+                />
+              </>
+            }
           />
-          {multi && resourceId && (
+          {multi && resourceId && view === "grid" && (
             <BulkBar
               editReason={canEdit(info).reason}
               runReason={canRun(info).reason}
@@ -750,7 +960,18 @@ function StudioInner({
             />
           )}
           <div className="grid-area">
-            {resourceId ? (
+            {view === "search" ? (
+              <SearchView
+                filter={rowFilter}
+                languages={visibleLanguages}
+                columns={layout.all}
+                groupBy={groupBy}
+                onGroupBy={setGroupBy}
+                refreshToken={statsToken}
+                onJump={jumpToMatch}
+                onClose={() => setView("grid")}
+              />
+            ) : resourceId ? (
               <Grid
                 key={resourceId}
                 resourceId={resourceId}
@@ -776,12 +997,14 @@ function StudioInner({
                 columnActions={columnActions}
                 onColumnAction={onColumnAction}
                 onViewportWidth={setViewportWidth}
+                initialScroll={restoreScroll && restoreScroll.resourceId === resourceId ? restoreScroll : undefined}
+                onScrolled={onGridScrolled}
                 emptyMessage={rows.totalAll > 0 ? "条件に合う行がありません" : "このリソースにはエントリがありません"}
               />
             ) : (
               <div className="grid-empty">左のツリーからリソースを選んでください。</div>
             )}
-            {showDetail && resourceId && (
+            {showDetail && resourceId && view === "grid" && (
               <DetailPanel
                 resourceId={resourceId}
                 rowKey={selRow?.key}

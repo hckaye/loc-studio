@@ -3,9 +3,9 @@
  */
 import { severityAtLeast } from "@loc-studio/core";
 import { cellValueText, stableStringify } from "@loc-studio/core";
-import type { ColumnDef, EntryData, LanguageDef, TreeNode } from "@loc-studio/sdk";
+import type { ColumnDef, EntryData, LanguageDef, Severity, TreeNode } from "@loc-studio/sdk";
 import { ApiError } from "./api-types.js";
-import type { ProgressCount, ResourceStats, RowInfo, RowsRequest, RowsResponse, TreeNodeInfo } from "./api-types.js";
+import type { ProgressCount, ResourceStats, RowFilter, RowInfo, RowsRequest, RowsResponse, TreeNodeInfo } from "./api-types.js";
 import { buildCells, metaIssuesOf } from "./cells.js";
 import type { WsContext } from "./context.js";
 import { enumOf } from "./context.js";
@@ -13,6 +13,8 @@ import { lowerOf } from "./documents.js";
 import type { DocState } from "./documents.js";
 import { issueKey, validateEntries } from "./issues.js";
 import { hasResourceScope } from "./permissions.js";
+import { compileQuery, readFacts } from "./query.js";
+import type { CompiledQuery } from "./query.js";
 
 /** 1 回の rows で返す行の上限。 */
 const MAX_LIMIT = 2000;
@@ -22,9 +24,9 @@ const MAX_FILTERS = 50;
 const MAX_STATS_RESOURCES = 500;
 
 /** 表に出す列（アクション列は値を持たないので除く）。 */
-const valueColumns = (ctx: WsContext): ColumnDef[] => ctx.columns().filter((c) => c.kind !== "actions");
+export const valueColumns = (ctx: WsContext): ColumnDef[] => ctx.columns().filter((c) => c.kind !== "actions");
 
-function requireLanguages(ctx: WsContext, ids: unknown): LanguageDef[] {
+export function requireLanguages(ctx: WsContext, ids: unknown): LanguageDef[] {
   if (!Array.isArray(ids)) throw new ApiError("invalid", "languages は言語 ID の配列で指定してください。");
   // 同じ言語を何度も並べて仕事を増やせないよう、重複を除く。
   return [...new Set(ids.map((id) => String(id)))].map((id) => ctx.requireLanguage(id));
@@ -32,12 +34,55 @@ function requireLanguages(ctx: WsContext, ids: unknown): LanguageDef[] {
 
 const sameValue = (a: unknown, b: unknown): boolean => a === b || stableStringify(a ?? null) === stableStringify(b ?? null);
 
-export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsResponse> {
-  if (typeof req !== "object" || req === null) throw new ApiError("invalid", "rows の引数がありません。");
-  const languages = requireLanguages(ctx, req.languages);
-  const offset = Math.max(0, Math.floor(Number(req.offset ?? 0)) || 0);
-  const limit = Math.min(MAX_LIMIT, Math.max(0, Math.floor(Number(req.limit ?? 100)) || 0));
-  const doc = await ctx.docs.get(req.resourceId);
+/** 絞り込みの条件（rows と query で同じ）を、要求ごとに 1 回だけ確かめて用意したもの。 */
+export interface PreparedFilter {
+  languages: LanguageDef[];
+  search: string;
+  filters: { column: ColumnDef; language?: LanguageDef; cellId: string; values: unknown[] | undefined; contains: string | undefined }[];
+  where: CompiledQuery | undefined;
+  onlyUntranslated: boolean;
+  onlyIssues: Severity | undefined;
+  onlyStale: boolean;
+  onlyUnsaved: boolean;
+}
+
+/** 絞り込みの条件の形を確かめ、列と言語に解決する。書き方の誤りは、リソースを読む前に断る。 */
+export function prepareFilter(ctx: WsContext, req: RowFilter, languages: LanguageDef[]): PreparedFilter {
+  let filters: PreparedFilter["filters"] = [];
+  if (req.filters !== undefined) {
+    if (!Array.isArray(req.filters)) throw new ApiError("invalid", "filters は配列で指定してください。");
+    if (req.filters.length > MAX_FILTERS) throw new ApiError("invalid", `filters は ${MAX_FILTERS} 個までにしてください。`);
+    filters = req.filters.map((f) => {
+      const where = `絞り込み "${String(f?.cellId)}"`;
+      if (f?.values !== undefined && !Array.isArray(f.values)) throw new ApiError("invalid", `${where} の values は配列で指定してください。`);
+      if (f?.contains !== undefined && typeof f.contains !== "string") throw new ApiError("invalid", `${where} の contains は文字列で指定してください。`);
+      if (f?.values === undefined && f?.contains === undefined) throw new ApiError("invalid", `${where} には values か contains を指定してください。`);
+      return { ...ctx.parseCellId(f.cellId), cellId: f.cellId, values: f.values, contains: f.contains?.toLowerCase() };
+    });
+  }
+  const threshold = req.onlyIssues;
+  if (threshold !== undefined && threshold !== "error" && threshold !== "warning" && threshold !== "info") {
+    throw new ApiError("invalid", `onlyIssues は "error" / "warning" / "info" のどれかにしてください（"${String(threshold)}"）。`);
+  }
+  return {
+    languages,
+    search: typeof req.search === "string" ? req.search.trim().toLowerCase() : "",
+    filters,
+    where: compileQuery(ctx, req.where, languages),
+    onlyUntranslated: req.onlyUntranslated === true,
+    onlyIssues: threshold,
+    onlyStale: req.onlyStale === true,
+    onlyUnsaved: req.onlyUnsaved === true,
+  };
+}
+
+/** 条件が 1 つもないか（すべての行が合う）。 */
+export const isEmptyFilter = (f: PreparedFilter): boolean =>
+  f.search === "" && f.filters.length === 0 && f.where === undefined && !f.onlyUntranslated && f.onlyIssues === undefined && !f.onlyStale && !f.onlyUnsaved;
+
+/** リソースの行のうち、条件に合うもの（リソースの中の順）。条件どうしは「かつ」。 */
+export async function matchEntries(ctx: WsContext, doc: DocState, filter: PreparedFilter): Promise<EntryData[]> {
+  const { languages } = filter;
   const rid = doc.resource.id;
   const langIds = languages.map((l) => l.id);
   const textCol = ctx.textColumn();
@@ -45,7 +90,7 @@ export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsRespon
 
   let candidates: EntryData[] = doc.entries;
 
-  const q = typeof req.search === "string" ? req.search.trim().toLowerCase() : "";
+  const q = filter.search;
   if (q !== "") {
     const lower = lowerOf(doc, textLangs);
     const drafts = ctx.drafts.mapOf(rid);
@@ -61,7 +106,7 @@ export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsRespon
     candidates = out;
   }
 
-  if (req.onlyUnsaved) {
+  if (filter.onlyUnsaved) {
     const drafts = ctx.drafts.mapOf(rid);
     if (!drafts) candidates = [];
     else {
@@ -70,39 +115,32 @@ export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsRespon
     }
   }
 
-  if (req.onlyUntranslated) {
+  if (filter.onlyUntranslated) {
     candidates = candidates.filter((e) => textLangs.some((l) => (ctx.effectiveText(rid, e, l) ?? "") === ""));
   }
 
-  if (req.filters !== undefined) {
-    if (!Array.isArray(req.filters)) throw new ApiError("invalid", "filters は配列で指定してください。");
-    if (req.filters.length > MAX_FILTERS) throw new ApiError("invalid", `filters は ${MAX_FILTERS} 個までにしてください。`);
-    const parsed = req.filters.map((f) => {
-      const where = `絞り込み "${String(f?.cellId)}"`;
-      if (f?.values !== undefined && !Array.isArray(f.values)) throw new ApiError("invalid", `${where} の values は配列で指定してください。`);
-      if (f?.contains !== undefined && typeof f.contains !== "string") throw new ApiError("invalid", `${where} の contains は文字列で指定してください。`);
-      if (f?.values === undefined && f?.contains === undefined) throw new ApiError("invalid", `${where} には values か contains を指定してください。`);
-      return { ...ctx.parseCellId(f.cellId), cellId: f.cellId, values: f.values, contains: f.contains?.toLowerCase() };
-    });
-    if (parsed.length > 0 && candidates.length > 0) {
-      const cols = [...new Map(parsed.map((p) => [p.column.id, p.column])).values()];
-      const langs = [...new Map(parsed.filter((p) => p.language).map((p) => [p.language!.id, p.language!])).values()];
-      const cells = await buildCells(ctx, doc, candidates, { columns: cols, languages: langs, issues: false });
-      candidates = candidates.filter((_, i) =>
-        parsed.every((p) => {
-          const v = cells[i]![p.cellId]?.value;
-          if (p.values !== undefined && !p.values.some((want) => sameValue(want, v))) return false;
-          return p.contains === undefined || cellValueText(v).toLowerCase().includes(p.contains);
-        }),
-      );
-    }
+  const parsed = filter.filters;
+  if (parsed.length > 0 && candidates.length > 0) {
+    const cols = [...new Map(parsed.map((p) => [p.column.id, p.column])).values()];
+    const langs = [...new Map(parsed.filter((p) => p.language).map((p) => [p.language!.id, p.language!])).values()];
+    const cells = await buildCells(ctx, doc, candidates, { columns: cols, languages: langs, issues: false });
+    candidates = candidates.filter((_, i) =>
+      parsed.every((p) => {
+        const v = cells[i]![p.cellId]?.value;
+        if (p.values !== undefined && !p.values.some((want) => sameValue(want, v))) return false;
+        return p.contains === undefined || cellValueText(v).toLowerCase().includes(p.contains);
+      }),
+    );
   }
 
-  if (req.onlyIssues !== undefined && candidates.length > 0) {
-    const threshold = req.onlyIssues;
-    if (threshold !== "error" && threshold !== "warning" && threshold !== "info") {
-      throw new ApiError("invalid", `onlyIssues は "error" / "warning" / "info" のどれかにしてください（"${String(threshold)}"）。`);
-    }
+  if (filter.where && candidates.length > 0) {
+    const test = filter.where.test;
+    const facts = await readFacts(ctx, doc, candidates, filter.where.needs);
+    candidates = candidates.filter((_, i) => test(facts[i]!));
+  }
+
+  if (filter.onlyIssues !== undefined && candidates.length > 0) {
+    const threshold = filter.onlyIssues;
     const textLangDefs = languages.filter((l) => textLangs.includes(l.id));
     const found = await validateEntries(ctx, doc, candidates, textLangDefs);
     // 本文以外の列の問題（表示中の言語の列と、行に 1 つの列）も数える。
@@ -113,11 +151,22 @@ export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsRespon
     );
   }
 
-  if (req.onlyStale && candidates.length > 0) {
+  if (filter.onlyStale && candidates.length > 0) {
     const cols = ctx.columns().filter((c) => c.kind === "text" || c.kind === "review" || c.kind === "generated" || c.basis === "text");
     const cells = await buildCells(ctx, doc, candidates, { columns: cols, languages, issues: false });
     candidates = candidates.filter((_, i) => Object.values(cells[i]!).some((c) => c.stale || c.needsRecheck));
   }
+  return candidates;
+}
+
+export async function rows(ctx: WsContext, req: RowsRequest): Promise<RowsResponse> {
+  if (typeof req !== "object" || req === null) throw new ApiError("invalid", "rows の引数がありません。");
+  const languages = requireLanguages(ctx, req.languages);
+  const offset = Math.max(0, Math.floor(Number(req.offset ?? 0)) || 0);
+  const limit = Math.min(MAX_LIMIT, Math.max(0, Math.floor(Number(req.limit ?? 100)) || 0));
+  const filter = prepareFilter(ctx, req, languages);
+  const doc = await ctx.docs.get(req.resourceId);
+  let candidates = await matchEntries(ctx, doc, filter);
 
   if (req.sort !== undefined) candidates = await sortEntries(ctx, doc, candidates, req.sort);
 

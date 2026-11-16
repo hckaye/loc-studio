@@ -419,8 +419,8 @@ Web の層の流れは次のとおりです。クッキーのトークンを `au
 
 | 権限 | viewer | translator | reviewer | manager | メソッド |
 | --- | --- | --- | --- | --- | --- |
-| view | ○ | ○ | ○ | ○ | info, tree, stats, rows, rowDetail, history, reviews, textVersion, validateText, search, tokens, settings, plugins, jobs, job, changes, validate, reloadResource |
-| self | ○ | ○ | ○ | ○ | setLocalSetting（`user.name` と `secrets.*` は forbidden） |
+| view | ○ | ○ | ○ | ○ | info, tree, stats, rows, rowDetail, history, reviews, textVersion, validateText, search, query, exportQuery, tokens, settings, plugins, jobs, job, changes, uiState, validate, reloadResource |
+| self | ○ | ○ | ○ | ○ | setLocalSetting（`user.name` と `secrets.*` は forbidden）、setUiState（自分の画面の状態） |
 | edit | － | ○ | － | ○ | setText, discardDrafts, save, saveAll, setCell, setCells |
 | review | － | － | ○ | ○ | postReview, forwardReview |
 | run | － | ○ | ○ | ○ | runAction, generate, cancelJob（ほかの人のジョブは `manage` の権限がある役割だけ） |

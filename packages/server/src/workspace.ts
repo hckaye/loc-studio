@@ -35,6 +35,8 @@ import { tokens, validateText } from "./issues.js";
 import { forwardReview, postReview, reviews } from "./reviews.js";
 import { rowDetail, rows, stats, tree } from "./rows.js";
 import { search } from "./search.js";
+import { exportQuery, query } from "./query-api.js";
+import { setUiState, uiState } from "./ui-state.js";
 import { currentCall, runWithCall } from "./call-context.js";
 import { maskUrl, openPostgres } from "./pg-store.js";
 import { canManage } from "./permissions.js";
@@ -278,6 +280,8 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
     textVersion: live(async (p) => textVersion(ctx, p)),
     validateText: live(async (p) => validateText(ctx, p)),
     search: live(async (p) => search(ctx, p)),
+    query: live(async (p) => query(ctx, p)),
+    exportQuery: live(async (p) => exportQuery(ctx, p)),
     tokens: live(async (p) => tokens(ctx, p)),
     settings: live(async () => settings(ctx)),
     plugins: live(async () => plugins(ctx)),
@@ -292,6 +296,8 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
       const changeSeq = await ctx.shared.changeSeq();
       return { changeSeq, changed: changeSeq !== Number(p?.since), localSeq: ctx.localSeq };
     }),
+    uiState: live(async () => uiState(ctx)),
+    setUiState: live(async (p) => setUiState(ctx, p)),
     setText: live(async (p) => setText(ctx, p)),
     discardDrafts: live(async (p) => discardDrafts(ctx, p)),
     save: live(async (p) => save(ctx, p)),

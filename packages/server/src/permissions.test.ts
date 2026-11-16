@@ -49,12 +49,15 @@ const PARAMS: Record<keyof WorkspaceApi, unknown> = {
   textVersion: { hash: "0".repeat(64) },
   validateText: { resourceId: UI, key: "UI_OK", language: "ko", value: "x" },
   search: { query: "OK" },
+  query: { languages: ["ja"], where: "key = UI_OK" },
+  exportQuery: { languages: ["ja"], format: "csv" },
   tokens: { resourceId: UI, texts: ["{a}"] },
   settings: {},
   plugins: {},
   jobs: {},
   job: { id: "nope" },
   changes: { since: 0 },
+  uiState: {},
   validate: { resourceIds: [UI] },
   reloadResource: { resourceId: UI },
   setText: { resourceId: UI, key: "UI_OK", language: "ko", value: "좋아" },
@@ -71,6 +74,7 @@ const PARAMS: Record<keyof WorkspaceApi, unknown> = {
   editEntries: { resourceId: UI, changes: [{ type: "rename", key: "NO_SUCH_ROW", newKey: "X" }] },
   createResource: { path: "not-in-tree/new.csv" },
   setLocalSetting: { key: "ui.theme", value: "dark" },
+  setUiState: { state: { resourceId: UI } },
   updateProjectSettings: { patch: {} },
   reloadPlugins: {},
   trustPlugins: { paths: [] },
@@ -268,6 +272,8 @@ describe("設定の roles で決めた役割", () => {
       ["save", { resourceId: CHAPTER }],
       ["discardDrafts", { resourceId: CHAPTER }],
       ["generate", { columnId: "echo", scope: "resource", resourceId: CHAPTER, dryRun: true }],
+      ["query", { languages: ["ja"], resourceIds: [CHAPTER] }],
+      ["exportQuery", { languages: ["ja"], format: "csv", resourceIds: [CHAPTER] }],
     ];
     for (const [method, params] of hidden) {
       // 存在しないリソースと同じ答え（あることを知らせない）。
@@ -283,6 +289,14 @@ describe("設定の roles で決めた役割", () => {
     const hits = resultOf<{ resourceId: string }[]>(await dispatch(ws, "search", { query: "CH01" }, vendor));
     expect(hits).toEqual([]);
     expect(resultOf<unknown[]>(await dispatch(ws, "search", { query: "CH01" }, manager)).length).toBeGreaterThan(0);
+    // リソースをまたぐ問い合わせと書き出しも、見えるリソースだけを数える。
+    const counted = resultOf<{ resources: { resourceId: string }[]; totalRows: number }>(await dispatch(ws, "query", { languages: ["ja"] }, vendor));
+    expect(counted.resources.map((x) => x.resourceId)).toEqual([UI]);
+    expect(counted.totalRows).toBe(4);
+    const exported = resultOf<{ text: string; rows: number }>(await dispatch(ws, "exportQuery", { languages: ["ja"], format: "csv", cells: ["text@ja"] }, vendor));
+    expect(exported.rows).toBe(4);
+    expect(exported.text).not.toContain("CH01");
+    expect(resultOf<{ totalRows: number }>(await dispatch(ws, "query", { languages: ["ja"] }, manager)).totalRows).toBe(12);
     const validated = resultOf<{ resources: { resourceId: string }[] }>(await dispatch(ws, "validate", {}, vendor));
     expect(validated.resources.map((x) => x.resourceId)).toEqual([UI]);
     expect(resultOf(await dispatch(ws, "generate", { columnId: "echo", scope: "project", dryRun: true }, vendor))).toMatchObject({ total: 16 });

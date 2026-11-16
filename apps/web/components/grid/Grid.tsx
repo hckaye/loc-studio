@@ -59,6 +59,10 @@ export interface GridProps extends Omit<CellHandlers, "onCancelEdit"> {
   onResize(cellId: string, width: number): void;
   onViewportWidth(width: number): void;
   emptyMessage?: string;
+  /** 最初に戻すスクロールの位置（前回の状態の復元）。行を読み込んでから、1 回だけ当てる。 */
+  initialScroll?: { top: number; left: number } | undefined;
+  /** スクロールが止まったときの位置（状態の保存に使う）。 */
+  onScrolled?(top: number, left: number): void;
 }
 
 export interface GridHandle {
@@ -151,6 +155,35 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid(props, ref) 
     return () => ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 前回のスクロールの位置に戻す。行数が分かって表の高さが決まってから当てる（その前は、スクロールできる高さがない）。
+  const restoredRef = useRef(false);
+  const initialScroll = props.initialScroll;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !initialScroll || restoredRef.current || !rows.loaded) return;
+    restoredRef.current = true;
+    rowVirtualizer.scrollToOffset(initialScroll.top);
+    el.scrollTop = initialScroll.top;
+    el.scrollLeft = initialScroll.left;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.loaded, initialScroll]);
+  // スクロールが止まったら、位置を知らせる。
+  const onScrolled = props.onScrolled;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !onScrolled) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => onScrolled(el.scrollTop, el.scrollLeft), 200);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      clearTimeout(timer);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [onScrolled]);
 
   const scrollColumnIntoView = useCallback(
     (colIndex: number) => {

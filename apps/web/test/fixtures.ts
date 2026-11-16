@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { CellInfo, ProjectInfo, RowInfo, RowsRequest, WorkspaceApi } from "@loc-studio/server";
+import type { CellInfo, ExportQueryRequest, ProjectInfo, QueryRequest, RowInfo, RowsRequest, WorkspaceApi } from "@loc-studio/server";
 
 type R<K extends keyof WorkspaceApi> = Awaited<ReturnType<WorkspaceApi[K]>>;
 import type { ClientApi } from "@/lib/client/api";
@@ -120,6 +120,10 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
     reloadPlugins: vi.fn(async () => info),
     reloadResource: vi.fn(),
     search: vi.fn(async (): Promise<R<"search">> => []),
+    query: vi.fn(async (_req: QueryRequest): Promise<R<"query">> => ({ matched: { rows: 0, characters: 0, words: 0 }, totalRows: 0, resources: [], unreadable: [], rows: [] })),
+    exportQuery: vi.fn(async (_req: ExportQueryRequest): Promise<R<"exportQuery">> => ({ text: "", rows: 0, truncated: false })),
+    uiState: vi.fn(async (): Promise<R<"uiState">> => ({ state: null })),
+    setUiState: vi.fn(async (_params: { state: Record<string, unknown> | null }): Promise<R<"setUiState">> => ({ saved: true })),
     // {name} の形を変数として分ける、簡単な記法。
     tokens: vi.fn(async ({ texts }: { texts: string[] }): Promise<R<"tokens">> =>
       texts.map((text) => {
