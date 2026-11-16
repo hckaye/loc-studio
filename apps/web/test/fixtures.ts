@@ -96,6 +96,8 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
     validateText: vi.fn(async (_p: { value: string }) => [] as import("@loc-studio/server").IssueInfo[]),
     settings: vi.fn(async () => ({ local: [], localFile: "/tmp/settings.json", project: { languages: info.languages }, projectFromCode: [], projectFile: "/tmp/test/loc-studio.project.json", available: { columns: [], validators: [] } })),
     plugins: vi.fn(async (): Promise<R<"plugins">> => ({ plugins: [], dirs: [], errors: [], warnings: [], untrusted: [] })),
+    pluginSettings: vi.fn(async (): Promise<R<"pluginSettings">> => []),
+    setPluginSettings: vi.fn(async (_params: Parameters<WorkspaceApi["setPluginSettings"]>[0]): Promise<R<"setPluginSettings">> => []),
     trustPlugins: vi.fn(async (): Promise<ProjectInfo> => ({ ...info, untrustedPlugins: 0 })),
     untrustPlugins: vi.fn(async (): Promise<ProjectInfo> => info),
     validate: vi.fn(),

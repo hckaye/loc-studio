@@ -21,7 +21,7 @@ const EDIT: Method[] = ["setText", "discardDrafts", "save", "saveAll", "setCell"
 const REVIEW: Method[] = ["postReview", "forwardReview"];
 const RUN: Method[] = ["runAction", "generate", "cancelJob"];
 const STRUCTURE: Method[] = ["editEntries", "createResource"];
-const MANAGE: Method[] = ["updateProjectSettings", "reloadPlugins"];
+const MANAGE: Method[] = ["updateProjectSettings", "setPluginSettings", "reloadPlugins"];
 const LOCAL_ONLY: Method[] = ["trustPlugins", "untrustPlugins"];
 const FORBIDDEN: Record<string, Method[]> = {
   viewer: [...EDIT, ...REVIEW, ...RUN, ...STRUCTURE, ...MANAGE, ...LOCAL_ONLY],
@@ -54,6 +54,7 @@ const PARAMS: Record<keyof WorkspaceApi, unknown> = {
   tokens: { resourceId: UI, texts: ["{a}"] },
   settings: {},
   plugins: {},
+  pluginSettings: {},
   jobs: {},
   job: { id: "nope" },
   changes: { since: 0 },
@@ -76,6 +77,7 @@ const PARAMS: Record<keyof WorkspaceApi, unknown> = {
   setLocalSetting: { key: "ui.theme", value: "dark" },
   setUiState: { state: { resourceId: UI } },
   updateProjectSettings: { patch: {} },
+  setPluginSettings: { plugin: "perm-actions", values: {} },
   reloadPlugins: {},
   trustPlugins: { paths: [] },
   untrustPlugins: { paths: [] },

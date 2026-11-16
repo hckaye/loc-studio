@@ -22,6 +22,7 @@
 | [plugins/hook.md](plugins/hook.md) | フック（書き込みの前後に呼ばれる処理） |
 | [plugins/renderer.md](plugins/renderer.md) | 独自描画（セルの見せ方を差し替えるブラウザ用のモジュール） |
 | [plugins/host.md](plugins/host.md) | ホストの機能（`ctx.host`。DB、秘密情報、`fetch` など） |
+| [plugins/settings.md](plugins/settings.md) | プラグインの設定（項目の宣言、プラグインごとの設定ファイル、設定の画面での編集） |
 | [plugins/loading.md](plugins/loading.md) | 読み込みの決まり（プラグインフォルダと層、`plugin.json`、TypeScript、SDK の import） |
 | [plugins/trust.md](plugins/trust.md) | 画面での信頼の確認、import の条件、個人のプラグインの制限 |
 

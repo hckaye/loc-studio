@@ -45,6 +45,7 @@ import type { CallContext } from "./api-types.js";
 import { trustChecker, trustPlugins, untrustPlugins } from "./trust.js";
 import { validate } from "./validate.js";
 import { layersFromConfig, reloadProject, setLocalSetting, settings, updateProjectSettings } from "./settings-api.js";
+import { pluginSettings, setPluginSettings } from "./plugin-settings-api.js";
 
 /** 共有 DB の既定の場所（プロジェクトからの相対）。 */
 export const DEFAULT_STORAGE_PATH = path.join(".loc-studio", "meta.db");
@@ -285,6 +286,7 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
     tokens: live(async (p) => tokens(ctx, p)),
     settings: live(async () => settings(ctx)),
     plugins: live(async () => plugins(ctx)),
+    pluginSettings: live(async () => pluginSettings(ctx)),
     validate: live(async (p) => validate(ctx, p ?? {})),
     trustPlugins: live(async (p) => trustPlugins(ctx, p, infoFn)),
     restricted: false,
@@ -320,6 +322,7 @@ function makeWorkspace(ctx: WsContext, sensitive: { prefix: string; label: strin
     createResource: live(async (p) => createResource(ctx, p)),
     setLocalSetting: live(async (p) => setLocalSetting(ctx, p)),
     updateProjectSettings: live(async (p) => updateProjectSettings(ctx, p, infoFn)),
+    setPluginSettings: live(async (p) => setPluginSettings(ctx, p)),
     reloadPlugins: live(async () => {
       await reloadProject(ctx);
       return infoFn();

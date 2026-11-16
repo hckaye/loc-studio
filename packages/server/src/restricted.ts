@@ -1,7 +1,7 @@
 /**
  * 制限された状態のワークスペース。コードの設定（loc-studio.config.ts など）を信頼していないため、
  * JSON の設定だけでは開けないときに使う。DB もプラグインも開かず、コードも実行しない。
- * 画面が確認を出せるよう、info / plugins / settings / trustPlugins / untrustPlugins / reloadPlugins だけを受け付ける。
+ * 画面が確認を出せるよう、info / plugins / pluginSettings / settings / trustPlugins / untrustPlugins / reloadPlugins だけを受け付ける。
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -19,7 +19,7 @@ import { requireItems, requirePaths, untrustedInfo, verifyItems, writeTrustFile 
 import { sensitivePathsOf } from "./workspace.js";
 
 /** 制限された状態で使えるメソッド。 */
-const ALLOWED = new Set<string>(["info", "plugins", "settings", "trustPlugins", "untrustPlugins", "reloadPlugins"]);
+const ALLOWED = new Set<string>(["info", "plugins", "pluginSettings", "settings", "trustPlugins", "untrustPlugins", "reloadPlugins"]);
 
 export async function openRestricted(
   opts: WorkspaceOptions,
@@ -111,6 +111,10 @@ export async function openRestricted(
     info,
     async plugins() {
       return { plugins: [], dirs: [], errors: [], warnings: [...warnings], untrusted: untrustedInfo(candidates) };
+    },
+    // プラグインを読み込んでいないので、設定を宣言しているプラグインもない。
+    async pluginSettings() {
+      return [];
     },
     async settings() {
       return {

@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { INFRA_CONFIG_KEYS, PROJECT_CONFIG_JSON, readLocalSettings, resolveSetting, settingsCandidate, UntrustedConfigError, writeLocalSettings } from "@loc-studio/core";
+import { INFRA_CONFIG_KEYS, PROJECT_CONFIG_JSON, readLocalSettings, readPluginSettingsTexts, resolveSetting, settingsCandidate, UntrustedConfigError, writeLocalSettings } from "@loc-studio/core";
 import { currentSettingsCandidate, storeOf, TRUST_KEY } from "./trust.js";
 import type { SettingsLayers } from "@loc-studio/core";
 import type { ProjectConfig } from "@loc-studio/sdk";
@@ -148,7 +148,7 @@ export async function reloadProject(ctx: WsContext): Promise<void> {
   ctx.bump();
 }
 
-async function writeAtomic(file: string, text: string): Promise<void> {
+export async function writeAtomic(file: string, text: string): Promise<void> {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(6).toString("hex")}.tmp`);
   try {
     await writeFile(tmp, text, "utf8");
@@ -229,7 +229,7 @@ export async function updateProjectSettings(
     if (ctx.promptTrust && !currentCall()) {
       if (original === undefined) trustedBefore = true;
       else if (parsedOk) {
-        const before = settingsCandidate(file, current, original);
+        const before = settingsCandidate(file, current, original, await readPluginSettingsTexts(ctx.project.root));
         trustedBefore = before === undefined || storeOf(ctx.layers.local)[ctx.project.root]?.[file] === before.hash;
       }
     }

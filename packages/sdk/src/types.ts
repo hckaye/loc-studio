@@ -787,10 +787,47 @@ export interface Plugin {
   validators?: Validator[];
   hooks?: WorkflowHook[];
   renderers?: CellRenderer[];
+  /**
+   * このプラグインの設定の宣言。宣言すると、設定の画面の「プラグインの設定」に入力欄が出て、
+   * 値はプロジェクトの `loc-studio-plugin-settings/<プラグインの名前>.json` に保存される。
+   * 値は、入口の関数が受け取る `setup.settings.get(key)` で読む（PluginSetupContext）。
+   */
+  settings?: PluginSettingDef[];
+}
+
+/** プラグインの設定の 1 項目。 */
+export interface PluginSettingDef {
+  /** 設定ファイルのキー（プラグインの中で重複しない、空でない文字列）。 */
+  key: string;
+  /** 設定の画面に出す名前。 */
+  label: string;
+  /** 設定の画面に出す説明。 */
+  description?: string;
+  /** 値の種類。"enum" は options のどれか（値は文字列）。 */
+  type: "string" | "number" | "boolean" | "enum";
+  /** type: "enum" の選択肢（1 つ以上）。 */
+  options?: { value: string; label?: string }[];
+  /** 設定ファイルに値がないときの値。省略すると、値なし（undefined）。 */
+  default?: string | number | boolean;
+}
+
+/** プラグインの設定の値を読む窓口。 */
+export interface PluginSettingsReader {
+  /**
+   * 宣言した設定の値。設定ファイルに値がなければ default、default もなければ undefined。
+   * 宣言していないキーを渡すと例外。読み込みが終わる前（入口の関数の中）で呼ぶと例外になるので、
+   * validate や run など、拡張ポイントの関数の中で呼ぶ（呼ぶたびに、いまの値を返す）。
+   */
+  get(key: string): string | number | boolean | undefined;
+}
+
+/** 入口の関数（既定のエクスポートが関数のとき）が受け取るもの。 */
+export interface PluginSetupContext {
+  settings: PluginSettingsReader;
 }
 
 /** プラグインのファイルが既定で書き出すもの。値そのものか、値を返す関数。 */
-export type PluginModule = Plugin | (() => Plugin | Promise<Plugin>);
+export type PluginModule = Plugin | ((setup: PluginSetupContext) => Plugin | Promise<Plugin>);
 
 // ---------------------------------------------------------------------------
 // 設定

@@ -5,9 +5,11 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import { PLUGIN_API_VERSION } from "@loc-studio/sdk";
-import type { Plugin, ProjectConfig } from "@loc-studio/sdk";
+import type { Plugin, PluginSetupContext, ProjectConfig } from "@loc-studio/sdk";
 import { EXTENSION_FIELDS, EXTENSION_KINDS } from "./registry.js";
 import { inspectPluginCode } from "./code-graph.js";
+import { createSettingsReader, validateSettingDefs } from "./plugin-settings.js";
+import type { PluginSettingValue } from "./plugin-settings.js";
 import type { ExtensionKind, LoadedPlugin, PluginDirSpec, PluginLayer, PluginLoadError } from "./types.js";
 
 /** 読み込む前に信頼を確かめるプラグイン（1 ファイル、またはフォルダ）。 */
@@ -79,6 +81,11 @@ export interface LoadPluginDirsOptions extends LoaderOptions {
    * 省略時はすべて読み込む。builtin / app 層には呼ばない。
    */
   trust?: (candidate: PluginCandidate) => boolean;
+  /**
+   * プラグインの名前から、設定のいまの値を引く（入口の関数に渡す setup.settings が使う）。
+   * プラグインを読み込んでいる間はまだ値がないので、undefined を返してよい（そのあいだの get は例外になる）。
+   */
+  settingsValues?: (pluginName: string) => Record<string, PluginSettingValue> | undefined;
 }
 
 const PLUGIN_FILE_EXTS = [".ts", ".mts", ".js", ".mjs", ".cjs"];
@@ -319,6 +326,7 @@ export function validatePluginShape(plugin: unknown): string[] {
   if (typeof p.name !== "string" || p.name === "") problems.push("name は空でない文字列にしてください。");
   if (p.version !== undefined && typeof p.version !== "string") problems.push("version は文字列にしてください。");
   if (p.apiVersion !== undefined && typeof p.apiVersion !== "number") problems.push("apiVersion は数値にしてください。");
+  problems.push(...validateSettingDefs(p.settings));
   for (const kind of EXTENSION_KINDS) {
     const field = EXTENSION_FIELDS[kind];
     const list = p[field];
@@ -380,11 +388,17 @@ function fallbackName(entry: PluginEntry): string {
 async function loadEntry(
   entry: PluginEntry,
   importModule: (file: string) => Promise<{ hasDefault: boolean; value: unknown }>,
+  settingsValues?: LoadPluginDirsOptions["settingsValues"],
 ): Promise<Plugin[]> {
   const { hasDefault, value } = await importModule(entry.entry);
   if (!hasDefault) throw new Error("既定のエクスポート（export default）がありません。");
   let exported = value;
-  if (typeof exported === "function") exported = await (exported as () => unknown)();
+  // 入口が関数なら、設定の値を読む窓口を渡して呼ぶ。値は、読み込みが終わったあと（拡張ポイントの関数の中）で読める。
+  const loaded: { plugins?: Plugin[] } = {};
+  if (typeof exported === "function") {
+    const setup: PluginSetupContext = { settings: createSettingsReader(() => loaded.plugins, (name) => settingsValues?.(name)) };
+    exported = await (exported as (setup: PluginSetupContext) => unknown)(setup);
+  }
   const items: unknown[] = Array.isArray(exported) ? exported : [exported];
   if (items.length === 0) throw new Error("既定のエクスポートが空の配列です。");
 
@@ -420,6 +434,7 @@ async function loadEntry(
   });
   // 1 つでも問題があれば、そのファイルのプラグインは読み込まない（中途半端に登録しないため）。
   if (problems.length > 0) throw new Error(problems.join(" "));
+  loaded.plugins = plugins;
   return plugins;
 }
 
@@ -461,7 +476,7 @@ export async function loadPluginDirs(
         }
       }
       try {
-        const loaded = await loadEntry(entry, importModule);
+        const loaded = await loadEntry(entry, importModule, opts?.settingsValues);
         if (candidate) {
           // 確かめてから読み込むまでの間に書き換えられていたら、読み込んだものを捨てて確認を待つ。
           const after = await inspect(entry, spec.layer, errors, opts?.sdkPath);

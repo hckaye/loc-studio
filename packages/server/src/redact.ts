@@ -75,6 +75,9 @@ export function redactResult(method: string, result: unknown, r: RedactionPaths)
     // 接続先（Postgres の URL など）と DB のファイルの場所は出さない。
     if (info.storage) info.storage = { ...info.storage, path: "" };
   }
+  if ((method === "pluginSettings" || method === "setPluginSettings") && Array.isArray(v)) {
+    v = (v as { file?: string }[]).map((p) => ({ ...p, file: "" }));
+  }
   if (method === "settings" && v && typeof v === "object") {
     const s = v as { localFile?: string; projectFile?: string; project?: Record<string, unknown> };
     s.localFile = "";

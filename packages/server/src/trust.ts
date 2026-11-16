@@ -4,7 +4,7 @@
  * （確認したときと、実行されうるコードのハッシュが同じもの）だけを読み込む。
  * 信頼はローカル設定 "plugins.trust" に { [プロジェクトのルート]: { [パス]: ハッシュ } } で残す。
  */
-import { inspectConfigCode, inspectPluginCode, readLocalSettings, settingsCandidate, writeLocalSettings } from "@loc-studio/core";
+import { inspectConfigCode, inspectPluginCode, readLocalSettings, readPluginSettingsTexts, settingsCandidate, writeLocalSettings } from "@loc-studio/core";
 import { readFile } from "node:fs/promises";
 import type { PluginCandidate } from "@loc-studio/core";
 import { stat } from "node:fs/promises";
@@ -68,7 +68,8 @@ export async function currentSettingsCandidate(file: string): Promise<PluginCand
     throw new ApiError("failed", `設定ファイル ${file} を読めませんでした: ${errorText(err)}`);
   }
   if (typeof json !== "object" || json === null || Array.isArray(json)) return undefined;
-  return settingsCandidate(file, json as Record<string, unknown>, text);
+  // プラグインの設定ファイルの中身も、設定ファイルの確認の対象に入れる（プロジェクトのフォルダは、設定ファイルのあるフォルダ）。
+  return settingsCandidate(file, json as Record<string, unknown>, text, await readPluginSettingsTexts(path.dirname(file)));
 }
 
 export function requireItems(params: { items: TrustItem[] } | undefined): TrustItem[] {

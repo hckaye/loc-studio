@@ -6,6 +6,7 @@ import { createModuleImporter } from "./plugin-loader.js";
 import type { LoaderOptions, PluginCandidate } from "./plugin-loader.js";
 import { inspectConfigCode } from "./code-graph.js";
 import { envReferences, isReservedEnvName, settingsCandidate } from "./settings-trust.js";
+import { readPluginSettingsTexts } from "./plugin-settings.js";
 import { stableStringify } from "./validation.js";
 
 /** JSON の設定ファイルの名前。設定画面が書き換えるのはこちら。 */
@@ -92,7 +93,7 @@ export async function loadProjectConfig(projectRoot: string, opts?: LoadProjectC
     checkReservedEnv(text, jsonPath);
     if (opts?.trustConfig) {
       // 設定ファイルの基盤の項目と ${env:} の参照は、確認するまで使わない（つながない、展開しない）。
-      const sc = settingsCandidate(jsonPath, json, text);
+      const sc = settingsCandidate(jsonPath, json, text, await readPluginSettingsTexts(root));
       if (sc && !opts.trustConfig(sc)) untrustedSettings = sc;
     }
   }

@@ -6,7 +6,9 @@
  * 組をハッシュにして、利用者が確認したものだけを使う。manager が普段変える項目（言語、列など）はハッシュに入れない。
  */
 import { createHash } from "node:crypto";
+import path from "node:path";
 import type { PluginCandidate } from "./plugin-loader.js";
+import { PLUGIN_SETTINGS_DIR } from "./plugin-settings.js";
 import { stableStringify } from "./validation.js";
 
 /** 基盤の項目（Web モードでは管理者だけが変えられ、確認のモードでは設定ファイルの信頼のハッシュに入る）。 */
@@ -331,15 +333,46 @@ function stripImportant(r: SummaryRow & { important?: boolean }): SummaryRow {
   return row;
 }
 
+/** プラグインの設定ファイルの中身を、確認の画面の行にする（ファイルごとに 1 行。値は、何も省かずに出す）。 */
+function summarizePluginSettings(pluginSettings: Record<string, string>): SummaryRow[] {
+  return Object.entries(pluginSettings).map(([name, text]) => {
+    let value: string;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      value = isPlainObject(parsed)
+        ? Object.entries(parsed)
+            .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
+            .join("、") || "（値なし）"
+        : text;
+    } catch {
+      value = text;
+    }
+    return { label: `プラグインの設定（${PLUGIN_SETTINGS_DIR}/${name}）`, value, note: "プラグインは、この値を読んで動きを変えます" };
+  });
+}
+
 /**
- * 設定ファイルの信頼の対象。基盤の項目がなく ${env:} も参照していなければ undefined（確認は要らない）。
+ * 設定ファイルの信頼の対象。基盤の項目がなく ${env:} も参照しておらず、プラグインの設定ファイルもなければ undefined（確認は要らない）。
  * @param text 設定ファイルの中身（${env:} の参照を探す）
+ * @param pluginSettings プラグインの設定ファイルの中身（ファイル名 → 中身。readPluginSettingsTexts）。プラグインは、この値で動きを変えるので、
+ *   アプリの外で書き換えられた値をそのまま使わないよう、設定ファイルと一緒に確認の対象にする。なければ、ハッシュはこれまでと同じ。
  */
-export function settingsCandidate(file: string, json: Record<string, unknown>, text: string): PluginCandidate | undefined {
+export function settingsCandidate(file: string, json: Record<string, unknown>, text: string, pluginSettings: Record<string, string> = {}): PluginCandidate | undefined {
   const infra: Record<string, unknown> = {};
   for (const k of INFRA_CONFIG_KEYS) if (json[k] !== undefined) infra[k] = json[k];
   const env = envReferences(text);
-  if (Object.keys(infra).length === 0 && env.length === 0) return undefined;
-  const hash = createHash("sha256").update(stableStringify({ format: "loc-studio/settings-trust/1", infra, env }), "utf8").digest("hex");
-  return { kind: "settings", path: file, layer: "project", hash, files: [file], summary: summarizeInfra(json, env) };
+  const settingNames = Object.keys(pluginSettings).sort();
+  if (Object.keys(infra).length === 0 && env.length === 0 && settingNames.length === 0) return undefined;
+  const hashed: Record<string, unknown> = { format: "loc-studio/settings-trust/1", infra, env };
+  if (settingNames.length > 0) hashed.pluginSettings = Object.fromEntries(settingNames.map((n) => [n, pluginSettings[n]]));
+  const hash = createHash("sha256").update(stableStringify(hashed), "utf8").digest("hex");
+  const dir = path.join(path.dirname(file), PLUGIN_SETTINGS_DIR);
+  return {
+    kind: "settings",
+    path: file,
+    layer: "project",
+    hash,
+    files: [file, ...settingNames.map((n) => path.join(dir, n))],
+    summary: [...summarizeInfra(json, env), ...summarizePluginSettings(pluginSettings)],
+  };
 }

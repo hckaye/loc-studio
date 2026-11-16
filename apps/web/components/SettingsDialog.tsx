@@ -5,11 +5,13 @@ import { Dialog } from "@/components/Dialog";
 import { useStudio, useToasts } from "@/components/context";
 import { canManage } from "@/lib/client/permissions";
 import { ColumnsEditor, LanguagesEditor, MappingEditor, ValidatorsEditor } from "@/components/ProjectConfigEditors";
+import { PluginSettingsPanel } from "@/components/PluginSettings";
 
 /*
  * 設定。プロジェクト設定（チームで共有。loc-studio.project.json に書く）とローカル設定（この PC だけ）をタブで分ける。
  * コードの設定（loc-studio.config.ts）にある項目は読み取り専用、プロジェクト設定で固定された項目はローカル設定で変えられない。
  * 言語、列、検証、CSV / TSV の列の対応は、ここで編集できる（ProjectConfigEditors）。
+ * プラグインが宣言した設定は、「プラグインの設定」のタブで編集する（PluginSettings）。
  */
 
 type SettingsData = Awaited<ReturnType<WorkspaceApi["settings"]>>;
@@ -42,7 +44,7 @@ export function SettingsDialog({ onClose, onThemeChange, infrastructure = true }
   const { api, setInfo, mode } = useStudio();
   const { reportError } = useToasts();
   const web = mode === "web";
-  const [tab, setTab] = useState<"project" | "local">("project");
+  const [tab, setTab] = useState<"project" | "plugins" | "local">("project");
   const [data, setData] = useState<SettingsData | null>(null);
 
   const load = useCallback(() => {
@@ -59,11 +61,18 @@ export function SettingsDialog({ onClose, onThemeChange, infrastructure = true }
         <button type="button" role="tab" id="tab-project" aria-selected={tab === "project"} aria-controls="panel-project" className={`tab${tab === "project" ? " on" : ""}`} onClick={() => setTab("project")}>
           プロジェクト設定
         </button>
+        <button type="button" role="tab" id="tab-plugins" aria-selected={tab === "plugins"} aria-controls="panel-plugins" className={`tab${tab === "plugins" ? " on" : ""}`} onClick={() => setTab("plugins")}>
+          プラグインの設定
+        </button>
         <button type="button" role="tab" id="tab-local" aria-selected={tab === "local"} aria-controls="panel-local" className={`tab${tab === "local" ? " on" : ""}`} onClick={() => setTab("local")}>
           {web ? "個人設定" : "ローカル設定"}
         </button>
       </div>
-      {!data ? (
+      {tab === "plugins" ? (
+        <div role="tabpanel" id="panel-plugins" aria-labelledby="tab-plugins">
+          <PluginSettingsPanel />
+        </div>
+      ) : !data ? (
         <p className="muted small">読み込み中…</p>
       ) : tab === "project" ? (
         <div role="tabpanel" id="panel-project" aria-labelledby="tab-project">

@@ -33,6 +33,8 @@ import { resolveRoles } from "./roles.js";
 import { createMemoryDb } from "./memory-db.js";
 import { defaultPluginDirs, loadPluginDirs } from "./plugin-loader.js";
 import type { PluginCandidate } from "./plugin-loader.js";
+import { loadPluginSettings } from "./plugin-settings.js";
+import type { PluginSettingsState } from "./plugin-settings.js";
 import { EXTENSION_FIELDS, EXTENSION_KINDS, PluginRegistry } from "./registry.js";
 import type { ExtensionKind, PluginDirSpec, PluginLoadError, ResolvedValidator } from "./types.js";
 
@@ -82,6 +84,8 @@ export interface Project {
   readonly languages: LanguageDef[];
   /** プラグインに渡すホストの機能。reload しても同じものを使う。 */
   readonly host: PluginHost;
+  /** 設定を宣言しているプラグインの、設定の状態（宣言、設定ファイル、いまの値）。読み込んだ順。 */
+  readonly pluginSettings: PluginSettingsState[];
   language(id: LanguageId): LanguageDef | undefined;
   /** 設定の `columns` を解決した列の並び。問題のある列は除き、warnings に理由を出す。 */
   columns(): ColumnDef[];
@@ -212,6 +216,7 @@ interface ProjectState {
   warnings: string[];
   columns: ColumnDef[];
   roles: Record<string, RoleDef>;
+  pluginSettings: PluginSettingsState[];
 }
 
 async function buildState(root: string, opts: OpenProjectOptions): Promise<ProjectState> {
@@ -232,18 +237,24 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
   });
   const dirWarnings: string[] = [];
   const allowedDirs = opts.pluginDirRoots ? await filterPluginDirs(pluginDirs, opts.pluginDirRoots, dirWarnings) : pluginDirs;
+  // プラグインの設定の値は、プラグインを読み込んだあとで読む（宣言を見てから）。入口の関数に渡す窓口は、読んだ値をあとから引く。
+  const settingsHolder: { states?: PluginSettingsState[] } = {};
   const { plugins, errors, untrusted } = await loadPluginDirs(allowedDirs, {
     ...(opts.sdkPath ? { sdkPath: opts.sdkPath } : {}),
     ...(opts.trust ? { trust: opts.trust } : {}),
+    settingsValues: (name) => settingsHolder.states?.find((s) => s.plugin === name)?.values,
   });
   const deny = localDenyKinds(config);
   for (const { plugin, origin } of plugins) {
     registry.register(plugin, origin, origin.layer === "local" && deny.length > 0 ? { deny } : undefined);
   }
 
+  const pluginSettings = await loadPluginSettings(root, registry.plugins());
+  settingsHolder.states = pluginSettings.states;
+
   const resolved = resolveColumns(config, registry);
   const roles = resolveRoles(config, resolved.columns);
-  const warnings = [...dirWarnings, ...registry.warnings, ...checkConfigRefs(config, registry), ...resolved.warnings, ...roles.warnings];
+  const warnings = [...dirWarnings, ...registry.warnings, ...checkConfigRefs(config, registry), ...resolved.warnings, ...roles.warnings, ...pluginSettings.warnings];
   if (loaded.codeError) warnings.unshift(loaded.codeError);
   if (loaded.untrustedCode) untrusted.unshift(loaded.untrustedCode);
   return {
@@ -256,6 +267,7 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
     warnings,
     columns: resolved.columns,
     roles: roles.roles,
+    pluginSettings: pluginSettings.states,
   };
 }
 
@@ -345,6 +357,9 @@ class ProjectImpl implements Project {
   }
   get warnings(): string[] {
     return this.state.warnings;
+  }
+  get pluginSettings(): PluginSettingsState[] {
+    return this.state.pluginSettings;
   }
   get languages(): LanguageDef[] {
     return this.state.config.languages;

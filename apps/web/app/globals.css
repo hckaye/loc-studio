@@ -873,6 +873,25 @@ textarea.input {
 .g-cell.active {
   box-shadow: inset 0 0 0 2px var(--accent-border);
 }
+/* 設定の画面の「プラグインの設定」 */
+.plugin-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.plugin-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plugin-setting .input {
+  max-width: 360px;
+}
+.plugin-setting p {
+  margin: 0;
+}
 /* 右クリックのメニュー（画面の座標に出す）。 */
 .context-menu {
   position: fixed;

@@ -193,7 +193,7 @@ Web モードのサーバーは、画面の本番ビルド（Next.js の standal
 | アクションと生成の実行 | － | ○ | ○ | ○ |
 | 行の追加・削除・キーの変更、リソースの作成 | － | － | － | ○ |
 | ほかの人が始めたジョブの取り消し | － | － | － | ○ |
-| プロジェクト設定の一部の変更（下記）、プラグインの再読み込み | － | － | － | ○ |
+| プロジェクト設定の一部の変更（下記）、プラグインの設定の保存、プラグインの再読み込み | － | － | － | ○ |
 | プロジェクト設定のそのほかの項目の変更 | 管理者だけ | | | |
 | 利用者と権限の管理（サーバー全体） | 管理者だけ | | | |
 
@@ -425,7 +425,7 @@ Web の層の流れは次のとおりです。クッキーのトークンを `au
 | review | － | － | ○ | ○ | postReview, forwardReview |
 | run | － | ○ | ○ | ○ | runAction, generate, cancelJob（ほかの人のジョブは `manage` の権限がある役割だけ） |
 | structure | － | － | － | ○ | editEntries, createResource |
-| manage | － | － | － | ○ | updateProjectSettings（管理者だけの項目は 6 章）, reloadPlugins |
+| manage | － | － | － | ○ | updateProjectSettings（管理者だけの項目は 6 章）, setPluginSettings, reloadPlugins |
 | local-only | － | － | － | － | trustPlugins, untrustPlugins |
 
 メソッドと権限の対応は `packages/server/src/permissions.ts`、同梱の役割は `packages/core/src/roles.ts` にあります。`WorkspaceApi` にメソッドを足して表に足さないと、型の確認で失敗します。

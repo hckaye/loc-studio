@@ -357,6 +357,30 @@ export interface SettingInfo {
   locked: boolean;
 }
 
+/** 設定を宣言しているプラグインの、設定の項目といまの値（pluginSettings）。 */
+export interface PluginSettingsInfo {
+  /** プラグインの名前（setPluginSettings の plugin に渡す）。 */
+  plugin: string;
+  version?: string;
+  layer: PluginLayer;
+  /** 設定ファイルの場所（まだなければ、最初に保存したときに作る）。Web モードでは、管理者でない人には空。 */
+  file: string;
+  items: {
+    key: string;
+    label: string;
+    description?: string;
+    type: "string" | "number" | "boolean" | "enum";
+    options?: { value: string; label?: string }[];
+    default?: string | number | boolean;
+    /** プラグインが受け取る値（設定ファイルの値。なければ default。どちらもなければ、この項目がない）。 */
+    value?: string | number | boolean;
+    /** 設定ファイルに値があるか（false なら、default で動いている）。 */
+    stored: boolean;
+  }[];
+  /** 使わなかった値（種類が合わない）と、設定ファイルを読めなかった理由。 */
+  problems: string[];
+}
+
 export interface PluginInfo {
   name: string;
   version?: string;
@@ -553,6 +577,8 @@ export interface WorkspaceApi {
     warnings: string[];
     untrusted: UntrustedPluginInfo[];
   }>;
+  /** 設定（settings）を宣言しているプラグインと、その項目、いまの値。設定の画面の「プラグインの設定」が使う。制限された状態では空。 */
+  pluginSettings(params?: NoParams): Promise<PluginSettingsInfo[]>;
   jobs(params?: NoParams): Promise<JobInfo[]>;
   job(params: { id: string }): Promise<JobInfo>;
   changes(params: { since: number }): Promise<{ changeSeq: number; changed: boolean; localSeq: number }>;
@@ -599,6 +625,11 @@ export interface WorkspaceApi {
   /** 画面の状態を保存する（null で消す）。自分の状態だけを変える。 */
   setUiState(params: { state: Record<string, unknown> | null }): Promise<{ saved: boolean }>;
   updateProjectSettings(params: { patch: Record<string, unknown> }): Promise<ProjectInfo>;
+  /**
+   * プラグインの設定の値を保存する（プロジェクトの loc-studio-plugin-settings/<名前>.json）。values の null は値を消す。
+   * 宣言にないキーや、種類の合わない値があれば、何も書かずに invalid。保存したら読み直し、保存後の一覧を返す。
+   */
+  setPluginSettings(params: { plugin: string; values: Record<string, unknown> }): Promise<PluginSettingsInfo[]>;
   reloadPlugins(params?: NoParams): Promise<ProjectInfo>;
   /**
    * 確認したプラグインとコードの設定を信頼する（ハッシュをローカル設定に残し、読み直す）。
@@ -644,6 +675,7 @@ export const WORKSPACE_METHODS = [
   "tokens",
   "settings",
   "plugins",
+  "pluginSettings",
   "jobs",
   "job",
   "changes",
@@ -665,6 +697,7 @@ export const WORKSPACE_METHODS = [
   "createResource",
   "setLocalSetting",
   "updateProjectSettings",
+  "setPluginSettings",
   "reloadPlugins",
   "trustPlugins",
   "untrustPlugins",

@@ -74,7 +74,30 @@ const UI_FILE = path.join(project, "Assets", "Text", "system", "ui.csv");
   config.columns.push({ id: "due", kind: "meta", scope: "entry", type: "date", source: "builtin.db", label: "期日" });
   config.grid = { progressUnit: "characters" };
   // 行が対象のアクション（「一括アクション」の確認に使う）。韓国語のステータスを「作業中」にする。
-  config.actions = ["check.mark"];
+  config.actions = ["check.mark", "check.echo"];
+  // 設定を宣言したプラグイン（入口が関数の形）。アクションが、設定の値を読んで結果の文言にする。
+  writeFileSync(
+    path.join(project, "loc-studio-plugins", "check-settings.mjs"),
+    `export default (setup) => ({
+  name: "browser-check-settings",
+  version: "1.0.0",
+  settings: [
+    { key: "prefix", label: "接頭辞", description: "アクションの結果の先頭に付ける文字です。", type: "string", default: "既定" },
+    { key: "limit", label: "上限", type: "number", default: 3 },
+    { key: "mode", label: "やり方", type: "enum", options: [{ value: "strict", label: "きびしく" }, { value: "loose", label: "ゆるく" }], default: "strict" },
+    { key: "enabled", label: "使う", type: "boolean", default: true },
+  ],
+  actions: [{
+    id: "check.echo",
+    label: "設定を読む",
+    target: "row",
+    async run() {
+      return { message: "接頭辞: " + setup.settings.get("prefix") + " / 上限: " + setup.settings.get("limit") + " / " + setup.settings.get("mode") };
+    },
+  }],
+});
+`,
+  );
   writeFileSync(
     path.join(project, "loc-studio-plugins", "check-actions.mjs"),
     `export default {
@@ -881,6 +904,50 @@ try {
     await until(`[0, 1].every((r) => ${cellAt("' + r + '", ".k-review")}.querySelector(".review-note-text")?.textContent === "用語をそろえてください")`, "選んだ 2 つのセルに、コメントが出る");
     check(true, "レビューを一括で投稿すると、選んだセルすべてに同じ判定とコメントが入り、窓が閉じる");
     await closeMenu().catch(() => {});
+  }
+
+  console.log("== プラグインの設定 ==");
+  {
+    const settings = `__t.dialog(/^設定$/)`;
+    const pluginForm = `document.querySelector('[role="dialog"] section[aria-label="プラグイン browser-check-settings の設定"]')`;
+    const field = (label) => `${pluginForm}?.querySelector('#' + CSS.escape([...${pluginForm}.querySelectorAll("label")].find((l) => l.textContent.trim() === ${JSON.stringify(label)})?.htmlFor ?? "none"))`;
+    const pluginFile = path.join(project, "loc-studio-plugin-settings", "browser-check-settings.json");
+    const toastHas = (text) => `__t.toasts().some((t) => t.includes(${JSON.stringify(text)}))`;
+    // 保存する前は、既定の値で動いている（設定ファイルはまだない）。
+    await rightClick(`document.querySelector('[data-row="0"] .k-key')`);
+    await click(menuItem("設定を読む"), "メニューの「設定を読む」");
+    await until(toastHas("接頭辞: 既定 / 上限: 3 / strict"), "既定の値で動く");
+    check(!existsSync(pluginFile), "設定を保存するまで、プラグインは既定の値で動く（設定ファイルは作らない）");
+
+    await click(`__t.button(/^設定$/)`, "設定");
+    await until(`!!${settings}`, "設定の画面");
+    await click(`__t.all('[role="tab"]', ${settings}).find((t) => t.textContent.trim() === "プラグインの設定")`, "「プラグインの設定」のタブ");
+    await until(`!!${pluginForm}`, "設定を宣言したプラグインの欄が出る");
+    const fields = await evaluate(`(() => {
+      const form = ${pluginForm};
+      return [...form.querySelectorAll("input, select")].map((el) => [el.tagName === "SELECT" ? "select" : el.type, el.type === "checkbox" ? el.checked : el.value, el.placeholder ?? ""]);
+    })()`);
+    check(
+      JSON.stringify(fields) === JSON.stringify([["text", "", "既定"], ["text", "", "3"], ["select", "", ""], ["checkbox", true, ""]]),
+      "宣言した項目ごとに、種類に合った入力欄が出る（文字、数値、選択式、チェック。既定の値を添える）",
+      fields,
+    );
+    check((await evaluate(`${pluginForm}.textContent`)).includes(pluginFile), "設定ファイルの場所が出る");
+    await evaluate(`(__t.setValue(${field("接頭辞")}, "検査"), __t.setValue(${field("上限")}, "12"), __t.select(${field("やり方")}, "loose"), true)`);
+    await click(`__t.button(/^設定を保存$/, ${pluginForm})`, "設定を保存");
+    await until(toastHas("プラグイン「browser-check-settings」の設定を保存しました"), "保存したことを知らせる");
+    const written = JSON.parse(readFileSync(pluginFile, "utf8"));
+    check(JSON.stringify(written) === JSON.stringify({ prefix: "検査", limit: 12, mode: "loose" }), "変えた項目だけが、プラグインごとの設定ファイルに書かれる", written);
+    await until(`${field("接頭辞")}?.value === "検査" && ${field("やり方")}?.value === "loose" && __t.button(/^設定を保存$/, ${pluginForm}).disabled`, "保存した値が、欄に入っている");
+    const state = await evaluate(`fetch("/api/rpc/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json())`);
+    check(state.result?.restricted !== true && state.result?.untrustedPlugins === 0, "画面から保存した値は、確認をやり直さずに使える（信頼の確認は出ない）", { restricted: state.result?.restricted, untrusted: state.result?.untrustedPlugins });
+    await click(`__t.all("button", ${settings}).find((b) => __t.name(b) === "閉じる")`, "設定を閉じる");
+    await until(`document.querySelectorAll('[role="dialog"]').length === 0`, "設定が閉じる");
+    // プラグインは、次に呼ばれたときから、保存した値を受け取る。
+    await rightClick(`document.querySelector('[data-row="0"] .k-key')`);
+    await click(menuItem("設定を読む"), "メニューの「設定を読む」（保存のあと）");
+    await until(toastHas("接頭辞: 検査 / 上限: 12 / loose"), "保存した値で動く");
+    check(true, "保存すると、プラグインは次から新しい値で動く（アクションの結果が変わる）");
   }
 
   const errors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);

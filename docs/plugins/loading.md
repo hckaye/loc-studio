@@ -77,7 +77,7 @@
 入口のファイルは、既定のエクスポート（`export default`）で、次のどれかを書き出します。
 
 - `Plugin` のオブジェクト
-- `Plugin` を返す関数（`async` でもよい）
+- `Plugin` を返す関数（`async` でもよい）。関数は、引数に `setup`（`PluginSetupContext`）を受け取ります。`setup.settings.get(key)` で、プラグインの設定の値を読めます（[settings.md](settings.md)）
 - `Plugin` の配列（1 つのファイルから複数のプラグイン。名前がなければ `<名前>#1`、`<名前>#2` の順に付きます）
 
 ```ts

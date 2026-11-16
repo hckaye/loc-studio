@@ -38,6 +38,8 @@ Postgres を使うテストは、環境変数 `LOC_STUDIO_TEST_PG_URL` に接続
 | ファイル形式、本文の記法、リソースの置き場、列の値の置き場 | `Format`、`TextSyntax`、`TreeProvider`、`ColumnSource` |
 | 編集画面で参照する言語と列、長さの数え方、ツリーに出す進捗の列 | プロジェクト設定の `editor`、`grid.progressColumn` |
 | セルの見せ方 | 列の `display`、独自描画（`CellRenderer`） |
+| プラグインが画面から調整させたい値（しきい値、切り替え） | プラグインの設定（`Plugin.settings` の宣言と、`loc-studio-plugin-settings/<名前>.json`） |
+| セルの右クリックのメニューに足す操作 | アクション（`target` が `cell` / `row` / `selection`。設定の `actions`） |
 
 アプリのコードに書いてはいけない具体例は次のとおりです。
 
@@ -58,6 +60,7 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 - **設定のキーを足すとき**は、Web モードで誰が変えられるかを決めます（`packages/server/src/settings-api.ts` の `MANAGER_CONFIG_KEYS` か `ADMIN_CONFIG_KEYS`。どちらにも入れないと型の確認で失敗します）。コードを動かす、外部につなぐ、ファイルや DB の場所を決めるキーは、信頼の確認の対象（`packages/core/src/settings-trust.ts` の `INFRA_CONFIG_KEYS` と要約）にも足します。
 - **サービス層のメソッドを足すとき**は、`WORKSPACE_METHODS` と `METHOD_CAPABILITIES` に足し（足さないと型の確認で失敗します）、役割ごとに断られるメソッドを書き下したテスト（`permissions.test.ts`）にも足します。リソースを受け取るメソッドは、必ず `ctx.docs.resource()` / `ctx.docs.get()` を通します（役割の `resources` で見えないリソースを「ない」と答えるため）。
 - **書き込みを足すとき**は、権限の確認（`assertCan` など）、フックの呼び出し（`runBefore` / `runAfter`）、変更履歴を揃えます。リソースを書くときは `writeResource` を使います（`resource.write` のフックが呼ばれます）。あとのフックは、リソースのロックを離してから呼びます。
+- **プラグインの設定の項目の種類を足すとき**は、SDK の `PluginSettingDef`、宣言と値の確認（`packages/core/src/plugin-settings.ts` の `validateSettingDefs` と `settingValueProblem`）、設定の画面の入力欄（`apps/web/components/PluginSettings.tsx`）、`docs/plugins/settings.md` を揃えます。設定ファイルの中身は、プロジェクトの設定ファイルの確認のハッシュに入ります（`settingsCandidate`）。プラグインの値の置き場所を足すときは、確認の対象から外れないようにします。
 - **誤った設定で権限を広げない。** 書き方の誤った定義は、無視して既定に戻すのではなく、何もできない側に倒して警告にします（役割の定義がその例です）。
 - 利用者に見せる文言（エラー、警告）には、何が、どこで、どう直せるかを書きます。プラグインの失敗は、プラグインの ID を添えて伝えます。
 
