@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { JobInfo } from "@loc-studio/server";
 import { RpcError } from "@/lib/client/api";
 import { makeInfo } from "@/test/fixtures";
-import { matchChoices, runOnMatches, type MatchChoice, type MatchRunState } from "./match-actions";
+import { generateChoices, isGenerateChoice, matchChoices, runOnMatches, supportsBatch, type GenerateChoice, type MatchChoice, type MatchRunState } from "./match-actions";
 
 /* 条件に合う行へのアクション: 選択肢の作り方と、リソースを順に回す処理。API はモック（プロセスの外との境目）。 */
 
@@ -11,6 +11,7 @@ const job = (over: Partial<JobInfo>): JobInfo => ({ id: "j1", kind: "action", la
 function fakeApi() {
   return {
     runAction: vi.fn(async (_p: unknown) => ({ patched: 1, matched: 1 }) as { patched: number; matched?: number; jobId?: string; message?: string; errors?: string[] }),
+    generate: vi.fn(async (_p: unknown) => ({ total: 1, cached: 0, toRun: 1, batchSize: 1 }) as { total: number; cached: number; toRun: number; batchSize: number; jobId?: string }),
     job: vi.fn(async (_p: { id: string }) => job({})),
     cancelJob: vi.fn(async (_p: { id: string }) => job({ status: "cancelled" })),
   };
@@ -51,6 +52,36 @@ describe("選択肢", () => {
     expect(matchChoices(back, ["ja", "en"]).map((c) => c.cellId)).toEqual(["back@en"]);
     expect(new Set(matchChoices(info, ["ja", "en"]).map((c) => c.id)).size).toBe(7);
   });
+
+  it("生成の選択肢は、生成列ごと、表示中の言語のうち、その列のある言語ごとに 1 つ（行に 1 つの生成列は 1 つ）", () => {
+    const base = makeInfo();
+    const info = makeInfo({
+      columns: [
+        ...base.columns,
+        { id: "check", kind: "generated", scope: "language", label: "翻訳の評価", generator: "eval" },
+        { id: "summary", kind: "generated", scope: "entry", label: "要約", generator: "sum" },
+      ],
+    });
+    expect(generateChoices(info, ["ja", "en"]).map(({ column, id: _id, ...rest }) => ({ columnId: column.id, ...rest }))).toEqual([
+      // 逆翻訳の列は、英語だけにある。
+      { columnId: "back", cellId: "back@en", language: "en", label: "逆翻訳 を生成（英語）" },
+      { columnId: "check", cellId: "check@ja", language: "ja", label: "翻訳の評価 を生成（日本語）" },
+      { columnId: "check", cellId: "check@en", language: "en", label: "翻訳の評価 を生成（英語）" },
+      { columnId: "summary", cellId: "summary", label: "要約 を生成" },
+    ]);
+    // 表示していない言語の列は出さない。生成列がなければ、選択肢もない。
+    expect(generateChoices(info, ["ja"]).map((c) => c.cellId)).toEqual(["check@ja", "summary"]);
+    expect(generateChoices(makeInfo({ columns: base.columns.filter((c) => c.kind !== "generated") }), ["ja", "en"])).toEqual([]);
+  });
+
+  it("まとめる数を指定できるのは、生成と、行をまとめて受け取れるアクション（batch）だけ", () => {
+    const [gen] = generateChoices(makeInfo(), ["en"]);
+    expect(isGenerateChoice(gen!)).toBe(true);
+    expect(supportsBatch(gen!)).toBe(true);
+    const plain: MatchChoice = { id: "p", action: { id: "p", label: "P", target: "row" }, label: "P" };
+    const batch: MatchChoice = { id: "b", action: { id: "b", label: "B", target: "row", batch: true }, label: "B" };
+    expect([isGenerateChoice(plain), supportsBatch(plain), supportsBatch(batch)]).toEqual([false, false, true]);
+  });
 });
 
 describe("実行", () => {
@@ -65,7 +96,8 @@ describe("実行", () => {
       { actionId: "mark", resourceId: "a.csv", filter: FILTER, cellId: "status@en", language: "en" },
       { actionId: "mark", resourceId: "b.csv", filter: FILTER, cellId: "status@en", language: "en" },
     ]);
-    expect(r).toEqual({ done: 2, total: 2, rows: 4, patched: 2, jobRows: 0, errors: ["text/b.csv: KEY_9: 変えられません"], messages: ["text/a.csv: 2 件を変えました"], stopped: false });
+    expect(r).toEqual({ done: 2, total: 2, rows: 4, patched: 2, jobRows: 0, cached: 0, errors: ["text/b.csv: KEY_9: 変えられません"], messages: ["text/a.csv: 2 件を変えました"], stopped: false });
+    expect(api.generate).not.toHaveBeenCalled();
     expect(progress.map((s) => s.done)).toEqual([0, 1, 2, 2]);
     expect(api.job).not.toHaveBeenCalled();
   });
@@ -94,6 +126,35 @@ describe("実行", () => {
     expect(order).toEqual(["run a.csv", "job", "job", "job", "run b.csv"]);
     expect(onJob).toHaveBeenCalledWith("j1");
     expect(r).toMatchObject({ done: 2, rows: 31, patched: 1, jobRows: 28, errors: ["text/a.csv: K3: 失敗 / K7: 失敗"], stopped: false });
+  });
+
+  it("batchSize を渡すと、runAction に付けて送る（渡さなければ、付けない）", async () => {
+    const api = fakeApi();
+    await runOnMatches(api, choice, FILTER, [TARGETS[0]!], { batchSize: 25 });
+    expect(api.runAction.mock.calls[0]![0]).toEqual({ actionId: "mark", resourceId: "a.csv", filter: FILTER, cellId: "status@en", language: "en", batchSize: 25 });
+  });
+
+  it("生成の選択肢では、リソースごとに、条件と言語を渡して generate を呼び、対象、キャッシュ済み、生成した数を足し上げる", async () => {
+    const api = fakeApi();
+    const [gen] = generateChoices(makeInfo(), ["en"]) as [GenerateChoice];
+    api.generate.mockResolvedValueOnce({ total: 6, cached: 2, toRun: 4, batchSize: 5, jobId: "g1" }).mockResolvedValueOnce({ total: 3, cached: 3, toRun: 0, batchSize: 5 });
+    api.job.mockResolvedValue(job({ id: "g1", kind: "generate", status: "done", total: 4, done: 3, failed: 1, error: '生成器 "llm" が失敗しました' }));
+    const onJob = vi.fn();
+    const r = await runOnMatches(api, gen, FILTER, TARGETS, { pollMs: 0, onJob, batchSize: 5 });
+    expect(api.generate.mock.calls.map((c) => c[0])).toEqual([
+      { columnId: "back", scope: "resource", resourceId: "a.csv", filter: FILTER, languages: ["en"], batchSize: 5 },
+      { columnId: "back", scope: "resource", resourceId: "b.csv", filter: FILTER, languages: ["en"], batchSize: 5 },
+    ]);
+    expect(api.runAction).not.toHaveBeenCalled();
+    expect(onJob).toHaveBeenCalledWith("g1");
+    expect(r).toEqual({ done: 2, total: 2, rows: 9, patched: 0, jobRows: 3, cached: 5, errors: ['text/a.csv: 生成器 "llm" が失敗しました'], messages: [], stopped: false });
+  });
+
+  it("行に 1 つの生成列では、言語を渡さない。batchSize を渡さなければ、付けない（生成器の既定で動く）", async () => {
+    const api = fakeApi();
+    const choiceEntry: GenerateChoice = { id: "g", column: { id: "summary", kind: "generated", scope: "entry" }, cellId: "summary", label: "要約 を生成" };
+    await runOnMatches(api, choiceEntry, FILTER, [TARGETS[0]!]);
+    expect(api.generate.mock.calls[0]![0]).toEqual({ columnId: "summary", scope: "resource", resourceId: "a.csv", filter: FILTER });
   });
 
   it("1 つのリソースで失敗しても、ほかのリソースは続ける", async () => {

@@ -24,8 +24,8 @@ function renderMenu(over: Partial<Parameters<typeof MatchActions>[0]> = {}, info
   const { api } = mockApi(info);
   const onDone = vi.fn();
   const onJob = vi.fn();
-  renderWithStudio(<MatchActions filter={{ onlyUntranslated: true }} languages={["ja", "en"]} targets={TARGETS} rows={12} scope="プロジェクト全体" onDone={onDone} onJob={onJob} {...over} />, api, info);
-  return { api, onDone, onJob };
+  const utils = renderWithStudio(<MatchActions filter={{ onlyUntranslated: true }} languages={["ja", "en"]} targets={TARGETS} rows={12} scope="プロジェクト全体" onDone={onDone} onJob={onJob} {...over} />, api, info);
+  return { api, onDone, onJob, unmount: utils.unmount };
 }
 const openMenu = () => fireEvent.click(screen.getByRole("button", { name: "一括アクション ▾" }));
 /** ボタンが有効になるのを待ってから押す。 */
@@ -39,7 +39,8 @@ describe("一括アクションのメニュー", () => {
     const { api } = renderMenu();
     openMenu();
     expect(screen.getByRole("menu", { name: "絞り込みに合う行に実行するアクション" }).textContent).toContain("プロジェクト全体の、絞り込みに合う 12 行に実行");
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["チケット（日本語 / 本文）", "チケット（英語 / 本文）", "送る"]);
+    // アクションのあとに、生成列の生成（列と、その列のある言語ごと）が並ぶ。
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["チケット（日本語 / 本文）", "チケット（英語 / 本文）", "送る", "逆翻訳 を生成（英語）"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "送る" }));
     const dialog = await screen.findByRole("dialog", { name: "一括アクション: 送る" });
     expect(dialog.textContent).toContain("「送る」を、プロジェクト全体の、絞り込みに合う 12 行（2 個のリソース）に実行します。");
@@ -102,9 +103,174 @@ describe("一括アクションのメニュー", () => {
     expect(item.title).toBe("アクションと生成を実行する権限がありません");
   });
 
-  it("行が対象のアクションがなければ、ボタンを出さない", () => {
-    renderMenu({}, { actions: [{ id: "export", label: "書き出し", target: "file" }] });
+  it("行が対象のアクションも、生成列もなければ、ボタンを出さない。生成列があれば、生成だけを並べる", () => {
+    const columns = makeInfo().columns;
+    const first = renderMenu({}, { actions: [{ id: "export", label: "書き出し", target: "file" }], columns: columns.filter((c) => c.kind !== "generated") });
     expect(screen.queryByRole("button", { name: "一括アクション ▾" })).toBeNull();
+    first.unmount();
+    renderMenu({}, { actions: [{ id: "export", label: "書き出し", target: "file" }] });
+    openMenu();
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["逆翻訳 を生成（英語）"]);
+  });
+});
+
+describe("生成列の生成を、条件に合う行にまとめて実行する", () => {
+  it("生成を選ぶと、まとめて送る行数を選べる。実行すると、リソースごとに条件と言語を渡して generate を呼び、結果を数で出す", async () => {
+    const { api, onDone, onJob } = renderMenu();
+    api.generate.mockResolvedValueOnce({ total: 6, cached: 2, toRun: 4, batchSize: 5, jobId: "g1" }).mockResolvedValueOnce({ total: 3, cached: 3, toRun: 0, batchSize: 5 });
+    api.job.mockResolvedValue({ id: "g1", kind: "generate", label: "生成", status: "done", total: 4, done: 4, failed: 0, skipped: 0, startedBy: "tester", startedAt: 0 } as never);
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "逆翻訳 を生成（英語）" }));
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 逆翻訳 を生成（英語）" });
+    expect(dialog.textContent).toContain("「逆翻訳 を生成（英語）」を、プロジェクト全体の、絞り込みに合う 12 行（2 個のリソース）に実行します。");
+    expect(dialog.textContent).toContain("結果がキャッシュにある行は、もう一度は生成しません。");
+    const batch = within(dialog).getByLabelText("まとめて送る行数（バッチサイズ）") as HTMLInputElement;
+    expect(batch.placeholder).toBe("既定");
+    fireEvent.change(batch, { target: { value: "5" } });
+    expect(api.generate).not.toHaveBeenCalled();
+    await press(() => within(dialog).getByRole("button", { name: "12 行に実行" }));
+    await within(dialog).findByText(/終わりました。/);
+    const filter = { onlyUntranslated: true, languages: ["ja", "en"] };
+    expect(api.generate.mock.calls.map((c) => c[0])).toEqual([
+      { columnId: "back", scope: "resource", resourceId: "a.csv", filter, languages: ["en"], batchSize: 5 },
+      { columnId: "back", scope: "resource", resourceId: "b.csv", filter, languages: ["en"], batchSize: 5 },
+    ]);
+    expect(api.runAction).not.toHaveBeenCalled();
+    expect(onJob).toHaveBeenCalledWith("g1");
+    expect(within(dialog).getByRole("status").textContent).toContain("対象のセル 9 / キャッシュにあり生成しなかったセル 5 / 生成したセル 4 / エラー 0 件");
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("まとめて送る行数を空のままにすると、batchSize を付けずに呼ぶ（生成器の既定で動く）", async () => {
+    const { api } = renderMenu({ targets: [TARGETS[0]!] });
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "逆翻訳 を生成（英語）" }));
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 逆翻訳 を生成（英語）" });
+    await press(() => within(dialog).getByRole("button", { name: "12 行に実行" }));
+    await within(dialog).findByText(/終わりました。/);
+    expect(api.generate.mock.calls.map((c) => c[0])).toEqual([{ columnId: "back", scope: "resource", resourceId: "a.csv", filter: { onlyUntranslated: true, languages: ["ja", "en"] }, languages: ["en"] }]);
+  });
+
+  it("その列を生成できない役割では、理由を付けて押せなくする", () => {
+    renderMenu({}, { permissions: { role: "translator", can: { edit: true, review: false, run: true, structure: false, manage: false }, generators: ["other"] } });
+    openMenu();
+    const item = screen.getByRole("menuitem", { name: "逆翻訳 を生成（英語）" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(item.title).toBe("この列の生成は、あなたの役割では実行できません");
+    // アクションは実行できる。
+    expect((screen.getByRole("menuitem", { name: "送る" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("まとめて送る行数（バッチサイズ）", () => {
+  const BATCH_ACTIONS = [
+    { id: "mt", label: "外部に送る", target: "row" as const, batch: true },
+    { id: "send", label: "送る", target: "row" as const },
+  ];
+
+  it("行をまとめて受け取れるアクションにだけ、入力欄を出す。入れた数を runAction に渡す", async () => {
+    const { api } = renderMenu({ targets: [TARGETS[0]!] }, { actions: BATCH_ACTIONS });
+    api.runAction.mockResolvedValue({ patched: 12, matched: 12 });
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "送る" }));
+    let dialog = await screen.findByRole("dialog", { name: "一括アクション: 送る" });
+    expect(within(dialog).queryByLabelText("まとめて送る行数（バッチサイズ）")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "やめる" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "外部に送る" }));
+    dialog = await screen.findByRole("dialog", { name: "一括アクション: 外部に送る" });
+    const batch = within(dialog).getByLabelText("まとめて送る行数（バッチサイズ）") as HTMLInputElement;
+    expect(batch.placeholder).toBe("1");
+    expect(dialog.textContent).toContain("空なら既定（1 行ずつ）で実行します。");
+    fireEvent.change(batch, { target: { value: "20" } });
+    await press(() => within(dialog).getByRole("button", { name: "12 行に実行" }));
+    await within(dialog).findByText(/終わりました。/);
+    expect(api.runAction.mock.calls.map((c) => c[0])).toEqual([{ actionId: "mt", resourceId: "a.csv", filter: { onlyUntranslated: true, languages: ["ja", "en"] }, batchSize: 20 }]);
+  });
+
+  it("1 以上 1000 以下の整数でない値は、理由を出して、実行させない", async () => {
+    const { api } = renderMenu({ targets: [TARGETS[0]!] }, { actions: BATCH_ACTIONS });
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "外部に送る" }));
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 外部に送る" });
+    const batch = within(dialog).getByLabelText("まとめて送る行数（バッチサイズ）");
+    for (const value of ["0", "2.5", "1001", "たくさん"]) {
+      fireEvent.change(batch, { target: { value } });
+      expect(within(dialog).getByRole("alert").textContent).toBe("1 以上 1000 以下の整数で入力してください。");
+      expect((within(dialog).getByRole("button", { name: "12 行に実行" }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    fireEvent.change(batch, { target: { value: "" } });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    await press(() => within(dialog).getByRole("button", { name: "12 行に実行" }));
+    await within(dialog).findByText(/終わりました。/);
+    // 空なら、batchSize を付けない（1 行ずつ）。
+    expect(api.runAction.mock.calls.map((c) => c[0])).toEqual([{ actionId: "mt", resourceId: "a.csv", filter: { onlyUntranslated: true, languages: ["ja", "en"] } }]);
+  });
+});
+
+describe("対象の範囲を、プロジェクト全体に広げる", () => {
+  const result = (over: Partial<QueryResponse>): QueryResponse => ({ matched: { rows: 0, characters: 0, words: 0 }, totalRows: 0, resources: [], unreadable: [], rows: [], ...over });
+
+  it("表のツールバーでは、確かめる窓で範囲を選べる。プロジェクト全体を選ぶと、条件に合う行を数え、合う行のあるリソースだけに実行する", async () => {
+    const { api } = renderMenu({ targets: [TARGETS[0]!], rows: 3, scope: "このリソース", allowProject: true });
+    api.query.mockResolvedValue(
+      result({
+        matched: { rows: 9, characters: 90, words: 18 },
+        totalRows: 40,
+        resources: [
+          { resourceId: "a.csv", path: "a.csv", matched: 3, total: 10 },
+          { resourceId: "b.csv", path: "dir/b.csv", matched: 6, total: 10 },
+          { resourceId: "c.csv", path: "c.csv", matched: 0, total: 20 },
+        ],
+      }),
+    );
+    api.runAction.mockResolvedValueOnce({ patched: 3, matched: 3 }).mockResolvedValueOnce({ patched: 6, matched: 6 });
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "送る" }));
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 送る" });
+    // はじめは、このリソース。
+    expect((within(dialog).getByRole("radio", { name: "このリソース（3 行）" }) as HTMLInputElement).checked).toBe(true);
+    expect(dialog.textContent).toContain("「送る」を、このリソースの、絞り込みに合う 3 行に実行します。");
+    expect(api.query).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^プロジェクト全体（すべてのリソース）/ }));
+    await waitFor(() => expect(dialog.textContent).toContain("「送る」を、プロジェクト全体の、絞り込みに合う 9 行（2 個のリソース）に実行します。"));
+    // 数えるときも、表と同じ条件と、対象の言語を渡す（行は返させない）。
+    expect(api.query.mock.calls.map((c) => c[0])).toEqual([{ onlyUntranslated: true, languages: ["ja", "en"], limit: 0 }]);
+    await press(() => within(dialog).getByRole("button", { name: "9 行に実行" }));
+    await within(dialog).findByText(/終わりました。/);
+    const filter = { onlyUntranslated: true, languages: ["ja", "en"] };
+    expect(api.runAction.mock.calls.map((c) => c[0])).toEqual([
+      { actionId: "send", resourceId: "a.csv", filter },
+      { actionId: "send", resourceId: "b.csv", filter },
+    ]);
+    expect(within(dialog).getByRole("status").textContent).toContain("終わりました。 リソース 2 / 2");
+  });
+
+  it("このリソースに合う行がなくても、プロジェクト全体に広げれば実行できる。数えられなければ、理由を出して実行させない", async () => {
+    const { api } = renderMenu({ targets: [TARGETS[0]!], rows: 0, scope: "このリソース", allowProject: true });
+    api.query.mockRejectedValueOnce(new Error("リソース c.csv を読めませんでした"));
+    openMenu();
+    const item = screen.getByRole("menuitem", { name: "送る" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(false);
+    fireEvent.click(item);
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 送る" });
+    // このリソースには合う行がないので、そのままでは実行できない。
+    expect((within(dialog).getByRole("button", { name: "0 行に実行" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^プロジェクト全体（すべてのリソース）/ }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("プロジェクト全体の行数を数えられませんでした: リソース c.csv を読めませんでした");
+    expect((within(dialog).getByRole("button", { name: "行数を数えています…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.runAction).not.toHaveBeenCalled();
+  });
+
+  it("検索結果の表示（はじめからプロジェクト全体）では、範囲の選択を出さない", async () => {
+    renderMenu();
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "送る" }));
+    const dialog = await screen.findByRole("dialog", { name: "一括アクション: 送る" });
+    expect(within(dialog).queryByRole("radio")).toBeNull();
   });
 });
 

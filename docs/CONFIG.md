@@ -401,42 +401,89 @@ UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gol
 
 `generators` は、生成器に名前と `options` を付けます。生成列（`kind: "generated"`）の `generator` が、この名前を指します。名前が見つからなければ、生成器の ID として探します。
 
-`@loc-studio/plugin-llm` が `llm.translate` を登録します。同梱プラグインとは別のパッケージですが、画面、サービス層、CLI のすべてのコマンドで登録されます。
+同梱の `@loc-studio/plugin-llm` が、LLM（OpenAI 互換の API。LiteLLM など）を使う生成器を 2 つ登録します。同梱プラグインとは別のパッケージですが、画面、サービス層、CLI のすべてのコマンドで登録されます。自作の生成器は [plugins/generator.md](plugins/generator.md) にあります。
+
+| 生成器 | 作る値 | 設定の `columns` に `use` で足せる列 |
+| --- | --- | --- |
+| `llm.translate` | その言語の本文を、別の言語（既定は日本語）に翻訳した文章（機械翻訳、逆翻訳） | `llm.translation`（表示名「機械翻訳」） |
+| `llm.evaluate` | その言語の本文（訳文）を原文と比べた判定。`OK`、`WARNING`（合っているか怪しい）、`NG` のどれか。理由は、判定の横に出る | `llm.evaluation`（表示名「翻訳の評価」。判定の 3 つを、色つきの選択肢として持つ） |
+
+### LLM で機械翻訳と翻訳の評価をする
+
+設定は 2 か所です。`generators` で、生成器に名前と接続先を付けます。`columns` に、同梱の列を `use` で足し、`generator` にその名前を書きます。
 
 ```json
 "generators": {
-  "backTranslate": {
-    "use": "llm.translate",
-    "options": {
-      "endpoint": "https://llm.example.internal/v1",
-      "model": "my-model",
-      "to": "日本語",
-      "instructions": "ゲームの台詞です。口調を保ってください。"
-    }
-  }
+  "mt": { "use": "llm.translate", "options": { "endpoint": "https://llm.example.internal/v1", "model": "my-model" } },
+  "check": { "use": "llm.evaluate", "options": { "endpoint": "https://llm.example.internal/v1", "model": "my-model" } }
 },
 "columns": [
   { "use": "builtin.key", "id": "key" },
   { "use": "builtin.text", "id": "text" },
-  { "id": "backTranslation", "kind": "generated", "scope": "language", "label": "逆翻訳", "languages": ["JaEnglish"], "generator": "backTranslate" }
+  { "use": "llm.translation", "id": "mt", "generator": "mt", "languages": ["JaEnglish", "ko"] },
+  { "use": "llm.evaluation", "id": "mtCheck", "generator": "check", "languages": ["JaEnglish", "ko"] }
 ]
 ```
 
-| `llm.translate` の options | 型 | 既定 | 意味 |
-| --- | --- | --- | --- |
-| `endpoint` | `string` | なし（必須） | OpenAI 互換の API の基底 URL。`<endpoint>/chat/completions` に POST する |
-| `model` | `string` | なし（必須） | モデル名 |
-| `to` | `string` | なし（必須） | 訳し先の言語名（指示文に入る。例: `"日本語"`） |
-| `instructions` | `string` | なし | 指示文に足す文章 |
-| `apiKeySecret` | `string` | `"llm.apiKey"` | API キーの秘密情報の名前。秘密情報がなければ、`Authorization` ヘッダーを付けずに送る |
-| `temperature` | `number` | `0` | |
-| `timeoutMs` | `number` | `60000` | 1 回の要求の制限時間 |
+- `languages` には、翻訳や評価の対象にする言語（訳文の言語）を書きます。省くと、すべての言語に列が出ます。
+- 機械翻訳の入力は、そのセルの言語の本文です。空の本文は生成しません。
+- 評価の入力は、そのセルの言語の本文（訳文）と、原文の本文です。原文は、その言語の `basedOn`（基にする言語）の本文です。別の言語と比べたいときは、プラグインの設定の「比べる原文の言語」か、`options` の `source` に言語の ID を書きます。原文の言語が決まらない言語、原文の言語そのもの、原文か訳文が空の行は評価しません。
+- 結果は、共有 DB にキャッシュします。本文（評価では、原文か訳文）が変わると、セルに「変更あり」の印が出て、前の結果はそのまま残ります。生成し直すと「最新」に戻ります。「変更あり」の行は、絞り込みの「要確認」と、条件式の `stale` で探せます。
+- 評価の判定は、条件式と集計に使えます（`mtCheck@ko = NG`、`mtCheck@ko >= WARNING`。大小は `OK`、`WARNING`、`NG` の順）。
+- 列の表示名や選択肢の表示名と色は、`use` の横に `label` や `type` を書くと変えられます（保存される値は `OK` / `WARNING` / `NG` のままにします）。
+- 生成のしかた（セルのボタン、選んだ行、絞り込みに合う行、リソース全体、プロジェクト全体、コマンドライン）は、ほかの生成列と同じです（[QUERY.md の一括アクション](QUERY.md#一括アクション)、[CLI.md の generate](CLI.md#generate)）。
 
-入力は、そのセルの言語の本文です。逆翻訳の列なら、`languages` に訳文の言語（上の例では `JaEnglish`）を指定し、`to` に原文の言語名を書きます。空の本文は生成しません。
+#### 接続先（generators の options）
 
-API キーは秘密情報 `llm.apiKey` から読みます（ローカル設定の `secrets.llm.apiKey`、または環境変数 `LOC_STUDIO_SECRET_LLM_APIKEY`）。設定ファイルには書かないでください。API キーはキャッシュの鍵に入りません。結果は、生成器の ID、`version`、`cacheParams`（`endpoint`、`model`、`to`、`instructions`、`temperature`）、入力の全文を鍵にキャッシュします。本文が変わると、その値は「古い」になります。実行は、1 バッチ 8 件、並列 2、失敗時の再試行 2 回です。
+接続先は、プロジェクト設定の `generators` の `options` に書きます。外部につなぐ値なので、設定の信頼の確認の対象で、Web モードではサーバーの管理者だけが変えられます。
 
-テストはモックの `fetch` で行っています。実際の LLM の API には接続して確かめていません。自作の生成器は [plugins/generator.md](plugins/generator.md) にあります。
+| options | 型 | 既定 | 使う生成器 | 意味 |
+| --- | --- | --- | --- | --- |
+| `endpoint` | `string` | なし（必須） | 両方 | OpenAI 互換の API の基底 URL。`<endpoint>/chat/completions` に POST する |
+| `model` | `string` | なし（必須） | 両方 | モデル名 |
+| `apiKeySecret` | `string` | `"llm.apiKey"` | 両方 | API キーの秘密情報の名前。秘密情報がなければ、`Authorization` ヘッダーを付けずに送る |
+| `temperature` | `number` | `0` | 両方 | |
+| `timeoutMs` | `number` | `60000` | 両方 | 1 回の要求の制限時間 |
+| `instructions` | `string` | なし | 両方 | プロンプトの後ろに足す文章（使う場所ごとの補足） |
+| `prompt` | `string` | プラグインの設定の値 | 両方 | プロンプト。プラグインの設定より優先する |
+| `to` | `string` | プラグインの設定の値 | `llm.translate` | 訳し先の言語の名前。プラグインの設定より優先する |
+| `source` | `string` | プラグインの設定の値 | `llm.evaluate` | 比べる原文の言語の ID。プラグインの設定より優先する |
+
+API キーは秘密情報 `llm.apiKey` から読みます（ローカル設定の `secrets.llm.apiKey`、または環境変数 `LOC_STUDIO_SECRET_LLM_APIKEY`）。設定ファイルには書かないでください。API キーはキャッシュの鍵に入りません。
+
+`endpoint` か `model` がないと、生成は「オプション "endpoint" が設定されていません」で失敗し、何を設定に書けばよいかを添えて知らせます。
+
+#### プロンプトなどの設定（プラグインの設定）
+
+プロンプト、訳し先、比べる原文の言語は、プラグインの設定です。設定の画面の「プラグインの設定」のタブに、`@loc-studio/plugin-llm` の欄として出ます。値は、プロジェクトの `loc-studio-plugin-settings/%40loc-studio%2Fplugin-llm.json` に保存され、チームで共有されます（[plugins/settings.md](plugins/settings.md)）。Web モードでは、`manage` の権限がある役割が変えられます。
+
+| 項目（設定ファイルのキー） | 既定 | 意味 |
+| --- | --- | --- |
+| 機械翻訳: 訳し先の言語（`translateTo`） | `日本語` | プロンプトの `{to}` に入る、言語の名前 |
+| 機械翻訳: プロンプト（`translatePrompt`） | 「ユーザーが送る文章を{to}に翻訳してください。」で始まる 3 行 | モデルに渡す指示。`{to}` は訳し先の言語の名前に置き換わる |
+| 翻訳の評価: 比べる原文の言語（`evaluateSource`） | なし（その言語の `basedOn`） | 原文として比べる言語の ID |
+| 翻訳の評価: プロンプト（`evaluatePrompt`） | 判定の基準（OK / WARNING / NG の意味、変数とタグの確認、理由を日本語で書くこと） | モデルに渡す、判定の基準の指示。返事の形（判定と理由の JSON）の指示は、この後ろに自動で足す |
+
+- プロンプトの欄は複数行で、「既定の文章を入力欄に入れる」を押すと、既定の文章から書き換えられます。欄を空にして保存すると、既定に戻ります。
+- 同じ生成器を、場所ごとに別の値で使いたいときは、`generators` の `options`（`prompt`、`to`、`source`、`instructions`）に書きます。`options` の値が、プラグインの設定より優先されます。
+- プロンプトや訳し先を変えると、キャッシュの鍵が変わります。前の値で作った結果は「変更あり」になり、生成し直せます。元の値に戻すと、前の結果がまた「最新」として出ます。
+
+キャッシュの鍵は、生成器の ID、`version`、`cacheParams`、入力の全文です。`cacheParams` は、`llm.translate` では `endpoint`、`model`、訳し先、`instructions`、`temperature` と、既定から変えたときのプロンプトです。`llm.evaluate` では `endpoint`、`model`、プロンプト、`instructions`、`temperature` です（比べる原文は、入力のほうに入ります）。
+
+#### まとめて送る件数（バッチサイズ）
+
+どちらの生成器も、既定では 1 件ずつ送ります（1 回の要求に、1 つの本文）。生成のときにバッチサイズを指定すると、その件数を 1 回の要求にまとめて送ります（画面の生成の確認の「まとめて送る件数」、一括アクションの「まとめて送る行数」、コマンドラインの `generate --batch-size`、サービス層の `generate` の `batchSize`）。
+
+- 1 件のときは、本文をそのまま送り、返事をそのまま結果にします。
+- 2 件以上のときは、`id` を付けた JSON の配列で送り、モデルに `id` ごとの結果の配列を返させます。返事に足りない `id` があるなど、形の合わない返事は、そのまとまり全体を失敗にして、やり直します（2 回まで）。
+- まとめる件数を増やすと、要求の回数は減りますが、モデルが形を崩しやすくなります。失敗が増えたら、件数を減らしてください。
+- 同時に送る要求は 2 つまでです。
+
+#### 確かめた範囲
+
+- 生成器の単体のテストは、`fetch` を差し替えて行っています（`packages/plugin-llm/src/*.test.ts`）。
+- サービス層、コマンドライン、画面は、手元に立てた OpenAI 互換のサーバー（`chat/completions` に決まった返事を返すもの）を相手に確かめています。生成、キャッシュ、「変更あり」、条件に合う行だけの生成、バッチサイズ、プラグインの設定は `packages/server/src/llm.test.ts`、画面の操作は `npm run check:browser` です。コマンドラインでも、同じサーバーを相手に、サンプルのプロジェクトの写しで `generate`（`--where`、`--keys`、`--batch-size`）と `query` を実行しました（[CLI.md の generate](CLI.md#generate) に出力があります）。
+- 実際の LLM の API と、実際の LiteLLM には、接続して確かめていません。既定のプロンプトで、実際のモデルがどのくらい正しく判定するか、まとめて送ったときに形を守るかも、確かめていません。
 
 ## actions と review.targets
 

@@ -25,6 +25,18 @@ const WIDTH: PluginSettingsInfo = {
   problems: [],
 };
 
+/** 複数行の項目（プロンプト）を持つプラグイン。 */
+const PROMPTS: PluginSettingsInfo = {
+  plugin: "mystudio-llm",
+  layer: "builtin",
+  file: "",
+  items: [
+    { key: "prompt", label: "プロンプト", description: "モデルに渡す指示です。", type: "string", multiline: true, default: "1 行目の指示\n2 行目の指示", value: "1 行目の指示\n2 行目の指示", stored: false },
+    { key: "to", label: "訳し先", type: "string", default: "日本語", value: "日本語", stored: false },
+  ],
+  problems: [],
+};
+
 async function open(plugins: PluginSettingsInfo[], over: Partial<ProjectInfo> = {}) {
   const info = makeInfo(over);
   const { api } = mockApi(info);
@@ -54,6 +66,30 @@ describe("プラグインの設定", () => {
     expect(form.getByText("既定の値なし（いまは既定の値で動いています）")).toBeTruthy();
     // 変えるまで、保存は押せない。
     expect((form.getByRole("button", { name: "設定を保存" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("複数行の項目（multiline）は、複数行の入力欄で出す。既定の文章を入力欄に入れて、そこから書き換えられる", async () => {
+    const { api } = await open([PROMPTS]);
+    api.setPluginSettings.mockResolvedValue([PROMPTS]);
+    const form = within(await screen.findByRole("region", { name: "プラグイン mystudio-llm の設定" }));
+    const prompt = form.getByLabelText("プロンプト") as HTMLTextAreaElement;
+    expect([prompt.tagName, prompt.value, prompt.placeholder]).toEqual(["TEXTAREA", "", "1 行目の指示\n2 行目の指示"]);
+    // 1 行の項目は、これまでどおり 1 行の入力欄。
+    expect((form.getByLabelText("訳し先") as HTMLInputElement).tagName).toBe("INPUT");
+    // 既定の値は長いので、たたんで出す。
+    expect(form.getByText("モデルに渡す指示です。", { exact: false }).textContent).toBe("モデルに渡す指示です。 既定の値は、下で見られます（いまは既定の値で動いています）");
+    expect(form.getByText("既定の値を見る").closest("details")?.querySelector("pre")?.textContent).toBe("1 行目の指示\n2 行目の指示");
+
+    fireEvent.click(form.getByRole("button", { name: "既定の文章を入力欄に入れる" }));
+    expect(prompt.value).toBe("1 行目の指示\n2 行目の指示");
+    // 入れた直後は、既定と同じなので、もう一度は押せない。
+    expect((form.getByRole("button", { name: "既定の文章を入力欄に入れる" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(prompt, { target: { value: "1 行目の指示\n2 行目の指示\n敬語で訳す。" } });
+    const save = form.getByRole("button", { name: "設定を保存" }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    fireEvent.click(save);
+    // 改行を含む値を、そのまま送る。
+    await waitFor(() => expect(api.setPluginSettings).toHaveBeenCalledWith({ plugin: "mystudio-llm", values: { prompt: "1 行目の指示\n2 行目の指示\n敬語で訳す。" } }));
   });
 
   it("変えた項目だけを送る。空にした欄は null（既定の値に戻す）で送り、保存のあとは、返ってきた値から欄を作り直す", async () => {

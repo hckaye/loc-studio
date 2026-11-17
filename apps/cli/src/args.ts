@@ -44,8 +44,10 @@ export interface CliOptions {
   generate: boolean;
   yes: boolean;
   role?: string;
-  /** query: 条件式。 */
+  /** query / run / generate: 条件式。 */
   where?: string;
+  /** run / generate: 1 回にまとめる数（run は行、generate は生成器に渡す入力）。 */
+  batchSize?: number;
   /** query: 集計の区切り（欄）。 */
   groupBy?: string[];
   /** query: 出力するセル（セルの ID）。 */
@@ -141,8 +143,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   tree: [],
   validate: ["languages", "resources", "fail-on", "max-issues"],
   whoami: ["user"],
-  generate: ["languages", "resources", "dry-run", "user"],
-  run: ["languages", "resources", "keys", "where", "column", "user"],
+  generate: ["languages", "resources", "keys", "where", "batch-size", "dry-run", "user"],
+  run: ["languages", "resources", "keys", "where", "batch-size", "column", "user"],
   status: ["languages", "resources", "user"],
   query: ["languages", "resources", "where", "group-by", "columns", "format", "out", "bom", "limit", "user"],
   save: ["user"],
@@ -191,6 +193,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
         yes: { type: "boolean" },
         role: { type: "string" },
         where: { type: "string" },
+        "batch-size": { type: "string" },
         "group-by": { type: "string" },
         columns: { type: "string" },
         format: { type: "string" },
@@ -284,6 +287,11 @@ export function parseCliArgs(argv: string[]): CliOptions {
   };
   const list = (value: string): string[] => value.split(",").map((s) => s.trim()).filter((s) => s !== "");
   if (values.where !== undefined) options.where = values.where;
+  if (values["batch-size"] !== undefined) {
+    const n = Number(values["batch-size"]);
+    if (!Number.isInteger(n) || n < 1) throw new UsageError(`--batch-size には 1 以上の整数を指定してください: ${values["batch-size"]}`);
+    options.batchSize = n;
+  }
   if (values["group-by"] !== undefined) options.groupBy = list(values["group-by"]);
   if (values.columns !== undefined) options.columns = list(values.columns);
   if (values.format !== undefined) {
@@ -438,6 +446,9 @@ whoami のオプション:
 generate のオプション:
   --resources <glob>      対象のリソース（指定すると 1 リソースにつき 1 ジョブ。省略時はプロジェクト全体で 1 ジョブ）
   --languages <a,b>       対象の言語 ID
+  --keys <k1,k2>          対象のキー（そのキーの行だけを生成する。--where とは併用できない）
+  --where <式>            条件に合う行だけを生成する（式は query と同じ。例: "mt@ko is empty"）
+  --batch-size <n>        生成器に 1 回で渡す件数（省略時は生成器の既定。同梱の llm.translate / llm.evaluate は 1 件ずつ）
   --dry-run               件数（全体 / キャッシュ済み / 実行する分）だけ表示して終了する（生成器は呼ばない）
 
 run のオプション:
@@ -445,6 +456,7 @@ run のオプション:
   --languages <a,b>       対象の言語 ID（cell / column 対象は列 × 言語のセルごとに実行）
   --keys <k1,k2>          対象のキー（cell / row / selection 対象。省略時は全行）
   --where <式>            条件に合う行だけを対象にする（cell / row / selection 対象。式は query と同じ。--keys とは併用できない）
+  --batch-size <n>        1 回の呼び出しにまとめる行の数（既定は 1 行ずつ。2 以上は、行をまとめて受け取れるアクションだけ）
   --column <id>           cell / column 対象のアクションで使う列（省略時はアクションの columns）
 
 query のオプション:

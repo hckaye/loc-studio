@@ -5,7 +5,8 @@
 import type { CellRef, CellWrite, ColumnDef, EntryData, GeneratorInput, GeneratorOutput, LanguageId } from "@loc-studio/sdk";
 import { stableStringify } from "@loc-studio/core";
 import { ApiError } from "./api-types.js";
-import type { GenerateParams } from "./api-types.js";
+import type { GenerateParams, GenerateResult } from "./api-types.js";
+import { batchSizeOf } from "./batch-size.js";
 import { loadSourceValues, pageRowReader } from "./cells.js";
 import type { GeneratedCellRecord, GeneratedValue } from "./cells.js";
 import type { WsContext } from "./context.js";
@@ -14,6 +15,8 @@ import type { DocState } from "./documents.js";
 import { generatorCacheKey, textHash } from "./hash.js";
 import type { JobHandle } from "./jobs.js";
 import { assertCanRun } from "./permissions.js";
+import { matchEntries, prepareFilter, requireLanguages } from "./rows.js";
+import type { PreparedFilter } from "./rows.js";
 
 const DEFAULT_BATCH_SIZE = 10;
 
@@ -33,6 +36,16 @@ interface Unique {
 }
 
 async function targetDocs(ctx: WsContext, params: GenerateParams): Promise<{ doc: DocState; entries: EntryData[] }[]> {
+  // filter: 条件に合う行だけを対象にする（表の絞り込みと同じ RowFilter。行を選ぶのは、ここ）。
+  let filter: PreparedFilter | undefined;
+  if (params.filter !== undefined) {
+    if (typeof params.filter !== "object" || params.filter === null) throw new ApiError("invalid", "filter はオブジェクトで指定してください。");
+    if (params.scope === "cell" || params.scope === "selection") {
+      throw new ApiError("invalid", `filter（条件に合う行）は、scope が resource か project のときに指定できます（"${params.scope}" では、行を keys で名指しします）。`);
+    }
+    filter = prepareFilter(ctx, params.filter, requireLanguages(ctx, params.filter.languages));
+  }
+  const entriesOf = async (doc: DocState): Promise<EntryData[]> => (filter ? matchEntries(ctx, doc, filter) : doc.entries);
   switch (params.scope) {
     case "cell":
     case "selection": {
@@ -43,13 +56,13 @@ async function targetDocs(ctx: WsContext, params: GenerateParams): Promise<{ doc
     }
     case "resource": {
       const doc = await ctx.docs.get(params.resourceId ?? "");
-      return [{ doc, entries: doc.entries }];
+      return [{ doc, entries: await entriesOf(doc) }];
     }
     case "project": {
       const out: { doc: DocState; entries: EntryData[] }[] = [];
       for (const r of await ctx.docs.allResources()) {
         const doc = await ctx.docs.get(r.id);
-        out.push({ doc, entries: doc.entries });
+        out.push({ doc, entries: await entriesOf(doc) });
       }
       return out;
     }
@@ -58,10 +71,7 @@ async function targetDocs(ctx: WsContext, params: GenerateParams): Promise<{ doc
   }
 }
 
-export async function generate(
-  ctx: WsContext,
-  params: GenerateParams,
-): Promise<{ jobId?: string; total: number; cached: number; toRun: number }> {
+export async function generate(ctx: WsContext, params: GenerateParams): Promise<GenerateResult> {
   const column = ctx.column(params?.columnId);
   if (!column) throw new ApiError("not-found", `列 "${String(params?.columnId)}" はありません。`);
   if (column.kind !== "generated") throw new ApiError("invalid", `列 "${column.id}" は生成列ではありません。`);
@@ -71,6 +81,8 @@ export async function generate(
     throw new ApiError("invalid", `生成列 "${column.id}" の生成器 "${column.generator ?? ""}" が見つかりません（設定の generators と登録された生成器を確かめてください）。`);
   }
   const { generator, options } = spec;
+  // 生成器に 1 回で渡す入力の数。指定がなければ、生成器の既定。
+  const batchSize = batchSizeOf(params.batchSize) ?? Math.max(1, Math.floor(generator.batchSize ?? DEFAULT_BATCH_SIZE));
   let languages: (LanguageId | undefined)[];
   if (column.scope === "entry") languages = [undefined];
   else {
@@ -109,7 +121,7 @@ export async function generate(
   const existing = items.length > 0 ? await kv.getMany([...new Set(items.map((i) => i.cacheKey))]) : {};
   const cachedItems = items.filter((i) => i.cacheKey in existing);
   const runItems = items.filter((i) => !(i.cacheKey in existing));
-  const result = { total: items.length, cached: cachedItems.length, toRun: runItems.length };
+  const result = { total: items.length, cached: cachedItems.length, toRun: runItems.length, batchSize };
   if (params.dryRun) return result;
 
   // キャッシュにある分は、セルの記録だけを最新の鍵に合わせる。
@@ -124,7 +136,7 @@ export async function generate(
   }
   const label = `生成: ${column.label ?? column.id}（${runItems.length} 件）`;
   const job = ctx.jobs.start("generate", label, runItems.length, (handle) =>
-    runGeneration(ctx, column, [...uniques.values()], handle),
+    runGeneration(ctx, column, [...uniques.values()], handle, batchSize),
   );
   return { ...result, jobId: job.id };
 }
@@ -158,11 +170,10 @@ async function syncRecords(ctx: WsContext, items: Item[]): Promise<void> {
   }
 }
 
-async function runGeneration(ctx: WsContext, column: ColumnDef, uniques: Unique[], job: JobHandle): Promise<void> {
+async function runGeneration(ctx: WsContext, column: ColumnDef, uniques: Unique[], job: JobHandle, batchSize: number): Promise<void> {
   const spec = ctx.generatorFor(column);
   if (!spec) throw new Error(`生成列 "${column.id}" の生成器が見つかりません。`);
   const { generator, options } = spec;
-  const batchSize = Math.max(1, Math.floor(generator.batchSize ?? DEFAULT_BATCH_SIZE));
   const concurrency = Math.max(1, Math.floor(generator.concurrency ?? 1));
   const retries = Math.max(0, Math.floor(generator.retries ?? 0));
   const kv = ctx.shared.kv(GENERATED_NS);
@@ -198,6 +209,7 @@ async function runGeneration(ctx: WsContext, column: ColumnDef, uniques: Unique[
           continue;
         }
         const value: GeneratedValue = { value: out.value, generatorId: generator.id, at: new Date().toISOString() };
+        if (typeof out.comment === "string" && out.comment !== "") value.comment = out.comment;
         if (out.meta !== undefined) value.meta = out.meta;
         await kv.set(u.cacheKey, value);
         const rec: GeneratedCellRecord = { key: u.cacheKey, inputHash: u.inputHash };

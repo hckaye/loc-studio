@@ -13,6 +13,7 @@
 | `target` | 必須 | `"cell" \| "column" \| "row" \| "selection" \| "file" \| "review"` | 対象（下の表） |
 | `run` | 必須 | `(ctx) => Promise<ActionResult>` | 実行する。結果を返す |
 | `when` | 任意 | `(ctx) => boolean` | `false` を返すと、その対象では実行されない |
+| `runBatch` | 任意 | `(items) => Promise<ActionResult>` | 複数の行をまとめて処理する（`cell` / `row` 対象のアクション。下の「行をまとめて受け取る」） |
 | `columns` | 任意 | `string[]` | 使える列の ID。設定の `columns[].id` に書いた ID（登録 ID ではない） |
 | `languages` | 任意 | `string[]` | 使える言語の ID |
 | `icon` | 任意 | `string` | アイコン |
@@ -46,6 +47,45 @@
 `rows` は、`entries` と同じ順に並んだ `row` の配列です（`ctx.rows[i]` が `ctx.entries[i]` の行）。リソースを書き出す、外部のサービスに送るといったアクションは、ここから各行の本文と列の値を読みます。ほかのリソースの行は `ctx.host.project.rows(リソースの ID)` で読めます（[host.md](host.md#プロジェクトを読むhostproject)）。
 
 `entry` は `{ key, resource, meta?, stableId? }` です。`row` は、同じ行のほかの値を読む窓口で、`row.text(言語 ID)` で本文を、`row.get(列 ID, 言語 ID?)` で列の値を返します。
+
+### 行をまとめて受け取る（runBatch）
+
+`cell` / `row` 対象のアクションは、ふつうは行ごとに 1 回呼ばれます。外部の API に、複数の行を 1 回の要求で送りたいときは、`runBatch(items)` も実装します。
+
+- 実行する人が、1 回にまとめる行の数（バッチサイズ）を選びます。画面の「一括アクション」の確かめる窓の「まとめて送る行数」、コマンドラインの `run --batch-size`、サービス層の `runAction` の `batchSize` です。既定は 1 行ずつです。
+- バッチサイズが 2 以上のとき、対象の行をその数ずつに分け、まとまりごとに `runBatch` を 1 回呼びます（`run` は呼びません）。バッチサイズが 1 のときは、これまでどおり `run` を行ごとに呼びます。そのため、`run` も実装しておきます。
+- `items` は、`run` が行ごとに受け取る `ctx` と同じ値の配列です（行の順）。`when` が `false` を返した行は入りません。最後のまとまりは、バッチサイズより少ないことがあります。
+- 戻り値は `run` と同じ `ActionResult` です。まとまりの中のすべての行の変更を、`patches` にまとめて返します。
+- `runBatch` が例外を投げると、そのまとまりの行はすべて失敗になります。20 行を超えてジョブになっているときは、失敗として数えて次のまとまりに進みます。ジョブでないときは、どの行のまとまりかを添えたエラーで止まります（先に済んだまとまりの変更は残ります）。
+- `runBatch` のないアクションと、`selection` / `file` / `column` 対象のアクション（もともと対象を 1 回で受け取ります）には、2 以上のバッチサイズを指定できません。画面は入力欄を出さず、コマンドラインとサービス層は断ります。
+
+```js
+export default {
+  name: "mystudio-send",
+  actions: [
+    {
+      id: "mystudio.send",
+      label: "外部に送る",
+      target: "row",
+      // 1 行ずつのとき
+      async run(ctx) {
+        return send([ctx]);
+      },
+      // 何行かまとめるとき
+      async runBatch(items) {
+        return send(items);
+      },
+    },
+  ],
+};
+
+/** 行をまとめて 1 回で送る（ここでは、送った行数を知らせるだけ）。 */
+async function send(items) {
+  return { message: items.map((item) => item.entry.key).join(", ") + " を送りました（" + items.length + " 行）" };
+}
+```
+
+この例と同じ形のアクション（行をまとめて受け取り、行ごとの変更を返すもの）で、まとまりの分け方、`when` の扱い、失敗の数え方を、サービス層のテスト（`packages/server/src/action-batch.test.ts`）とコマンドラインのテストで確かめています。上のコードそのものは、動かしていません。
 
 ## run が返す値（ActionResult）
 

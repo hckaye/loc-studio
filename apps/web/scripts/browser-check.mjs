@@ -4,6 +4,7 @@
 //   ブラウザの場所は環境変数 LOC_STUDIO_CHROME で指定できる。見つからなければ、何も確かめずに終了コード 2 で終わる。
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -255,6 +256,8 @@ function prepareWebMode() {
 
 let webServer;
 let firstServer;
+let llmServer;
+let mockLlm;
 let exitCode = 1;
 try {
   // サーバーが答えるまで待つ。
@@ -611,7 +614,7 @@ try {
 
   // 表のツールバーの一括アクション: 開いているリソースの、絞り込みに合う行が対象。
   await click(`__t.button(/^一括アクション ▾$/)`, "表の一括アクション");
-  await until(`(document.querySelector('[role="menu"] .menu-note')?.textContent ?? "") === "このリソースの、絞り込みに合う 2 行に実行"`, "メニューに、対象の行数が出る");
+  await until(`(document.querySelector('[role="menu"] .menu-note')?.textContent ?? "") === "このリソースの、絞り込みに合う 2 行に実行（次の窓で、プロジェクト全体に広げられます）"`, "メニューに、対象の行数が出る");
   check(true, "表のツールバーの一括アクションは、開いているリソースの、絞り込みに合う行を対象にする（2 行）");
   await evaluate(`document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), true`);
 
@@ -1104,6 +1107,214 @@ try {
     firstServer.kill();
   }
 
+  console.log("== LLM のプラグイン（機械翻訳と、翻訳の評価。手元の OpenAI 互換のサーバーを相手にする） ==");
+  {
+    // 手元の OpenAI 互換のサーバー（chat/completions）。受けた要求を覚える。
+    // 翻訳は「訳:<本文>」、評価は訳文から決めた判定と理由を返す。まとめて送られたら、id ごとに返す。
+    const llmRequests = [];
+    mockLlm = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        const body = JSON.parse(raw);
+        const system = body.messages[0].content;
+        const user = body.messages[1].content;
+        llmRequests.push({ system, user });
+        let content;
+        if (system.includes("verdict")) {
+          const judge = (pair) => ({ verdict: pair.translation.includes("취소") ? "NG" : pair.translation.includes("?") ? "WARNING" : "OK", reason: "理由: " + pair.source });
+          const parsed = JSON.parse(user);
+          content = JSON.stringify(Array.isArray(parsed) ? parsed.map((pair) => ({ id: pair.id, ...judge(pair) })) : judge(parsed));
+        } else if (system.includes('"translation"')) {
+          content = JSON.stringify(JSON.parse(user).map((item) => ({ id: item.id, translation: "訳:" + item.text })));
+        } else {
+          content = "訳:" + user;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ model: "mock", choices: [{ message: { content } }] }));
+      });
+    });
+    await new Promise((resolve) => mockLlm.listen(0, "127.0.0.1", resolve));
+    const llmHost = `127.0.0.1:${mockLlm.address().port}`;
+    const llmUrl = `http://${llmHost}/v1`;
+
+    // 小さなプロジェクト（日本語と韓国語、リソース 2 つ）。韓国語に、機械翻訳の列と、翻訳の評価の列を足す。
+    const lproject = path.join(tmp, "llm-project");
+    mkdirSync(path.join(lproject, "text"), { recursive: true });
+    writeFileSync(path.join(lproject, "text", "a.csv"), "ID,JP,KR\nA_OK,決定,확인\nA_CANCEL,キャンセル,취소\nA_SAVE,セーブしますか？,저장하시겠습니까?\nA_GOLD,所持金,소지금\n");
+    writeFileSync(path.join(lproject, "text", "b.csv"), "ID,JP,KR\nB_YES,はい,예\nB_NO,いいえ,아니요\nB_BACK,戻る,뒤로\n");
+    writeFileSync(
+      path.join(lproject, "loc-studio.project.json"),
+      JSON.stringify(
+        {
+          name: "LLM",
+          languages: [
+            { id: "ja", label: "日本語" },
+            { id: "ko", label: "韓国語", basedOn: "ja" },
+          ],
+          tree: { use: "builtin.globTree", options: { include: ["text/*.csv"] } },
+          formats: [{ use: "builtin.csv", match: "**/*.csv", options: { key: "ID", text: { ja: "JP", ko: "KR" } } }],
+          generators: {
+            mt: { use: "llm.translate", options: { endpoint: llmUrl, model: "mock" } },
+            check: { use: "llm.evaluate", options: { endpoint: llmUrl, model: "mock" } },
+          },
+          columns: [
+            { use: "builtin.key", id: "key" },
+            { use: "builtin.text", id: "text" },
+            { use: "llm.translation", id: "mt", generator: "mt", languages: ["ko"] },
+            { use: "llm.evaluation", id: "mtCheck", generator: "check", languages: ["ko"] },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    const lport = await freePort();
+    const lbase = `http://127.0.0.1:${lport}`;
+    const lenv = { ...process.env, NODE_ENV: "production", PORT: String(lport), LOC_STUDIO_MODE: "local", LOC_STUDIO_LOCAL_TOKEN: TOKEN, LOC_STUDIO_PROJECT: lproject, LOC_STUDIO_USER_DATA_DIR: path.join(tmp, "llm-user") };
+    llmServer = spawn(process.execPath, [launcher], { env: lenv, stdio: ["ignore", "pipe", "pipe"] });
+    llmServer.stdout.on("data", (d) => (serverLog += d));
+    llmServer.stderr.on("data", (d) => (serverLog += d));
+    for (let i = 0; ; i++) {
+      try {
+        await fetch(lbase);
+        break;
+      } catch {
+        if (i > 100) throw new Error(`LLM の確認用のサーバーが起動しませんでした:\n${serverLog.slice(-500)}`);
+        await sleep(300);
+      }
+    }
+    await send("Page.navigate", { url: `${lbase}/?token=${TOKEN}` }, sessionId);
+    await until("document.readyState === 'complete'", "ページの読み込み");
+    await evaluate(HELPERS);
+    // 接続先（endpoint）は、設定ファイルの確認の対象。確認の画面に、接続先が出る。
+    await until(`!!__t.button(/^(信頼して開く|信頼して読み込む)$/)`, "設定の確認が出る", 60_000);
+    const confirmText = await evaluate(`[...document.querySelectorAll('[role="dialog"]')].map((d) => d.textContent).join(" / ")`);
+    check(confirmText.includes(llmHost), "LLM の接続先（endpoint）は、設定の確認の画面に出る（確認するまで、つながない）", confirmText.slice(0, 300));
+    await until(
+      `(async () => {
+        const b = __t.button(/^(信頼して開く|信頼して読み込む)$/);
+        if (b) {
+          if (!b.disabled) b.click();
+          return false;
+        }
+        if (!document.querySelector('[data-row="0"] .k-key')) return false;
+        const info = await fetch("/api/rpc/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json());
+        return info.result?.restricted !== true && info.result?.untrustedPlugins === 0;
+      })()`,
+      "信頼の確認を済ませて、表が出る",
+      60_000,
+    );
+    await click(`__t.all(".tree-row.resource").find((b) => /a\\.csv/.test(b.textContent))`, "ツリーの a.csv");
+    await until(`__t.keys().join(",") === "A_OK,A_CANCEL,A_SAVE,A_GOLD"`, "a.csv の行が出る");
+
+    // 行ごとの生成列のセル（機械翻訳、翻訳の評価の順）と、その印。
+    const genCell = (row, n) => `__t.all('[data-row="${row}"] .k-generated')[${n}]`;
+    const badge = (row, n) => `${genCell(row, n)}?.querySelector(".gen-badge")?.textContent.trim()`;
+    const badges = (n) => `__t.all("[data-row]").map((r) => r.querySelectorAll(".k-generated")[${n}]?.querySelector(".gen-badge")?.textContent.trim()).filter((t) => t !== undefined).join(",")`;
+    await until(`${badges(0)} === "未生成,未生成,未生成,未生成"`, "機械翻訳の列が、未生成で出る");
+    check((await evaluate(badges(1))) === "未生成,未生成,未生成,未生成", "機械翻訳の列と、翻訳の評価の列が、未生成の印で出る");
+    check(llmRequests.length === 0, "表を開いただけでは、LLM に何も送らない", llmRequests.length);
+
+    // ---- セルの「⟳」から、1 行だけ生成する
+    await click(`${genCell(0, 0)}?.querySelector("button")`, "機械翻訳のセルの生成のボタン");
+    const genDialog = `__t.dialog(/^生成: 機械翻訳/)`;
+    await until(`!!${genDialog}`, "生成の確認の窓");
+    await until(`document.querySelector("#generate-batch-size")?.value === "1"`, "まとめて送る件数に、生成器の既定（1 件ずつ）が入る");
+    check(true, "生成の確認の窓に、まとめて送る件数（既定は 1 件ずつ）が出る");
+    await click(`__t.button(/^1 件を生成$/, ${genDialog})`, "1 件を生成");
+    await until(`${badge(0, 0)} === "最新" && ${genCell(0, 0)}.textContent.includes("訳:확인")`, "機械翻訳の結果が、セルに出る");
+    check(llmRequests.length === 1 && llmRequests[0].user === "확인" && llmRequests[0].system.includes("日本語に翻訳"), "セルの生成のボタンで、その行の本文を LLM に送り、結果を列に出す", llmRequests);
+
+    // ---- 一括アクションから、プロジェクト全体を、3 行ずつまとめて生成する
+    const menuItems2 = `__t.all('[role="menu"] [role="menuitem"]').map((b) => b.textContent.trim())`;
+    await click(`__t.button(/^一括アクション ▾$/)`, "一括アクション");
+    await until(`${menuItems2}.length > 0`, "一括アクションのメニュー");
+    check(JSON.stringify(await evaluate(menuItems2)) === JSON.stringify(["機械翻訳 を生成（韓国語）", "翻訳の評価 を生成（韓国語）"]), "一括アクションのメニューに、生成列の生成が、列と言語ごとに並ぶ", await evaluate(menuItems2));
+    await click(`__t.all('[role="menu"] [role="menuitem"]').find((b) => b.textContent.trim() === "機械翻訳 を生成（韓国語）")`, "機械翻訳 を生成（韓国語）");
+    const bulk = `__t.dialog(/^一括アクション: 機械翻訳 を生成/)`;
+    await until(`!!${bulk}`, "確かめる窓");
+    check((await evaluate(`${bulk}.textContent`)).includes("このリソースの、すべての 4 行に実行します。"), "はじめは、開いているリソースの行が対象");
+    await click(`__t.all('input[type="radio"]', ${bulk})[1]`, "プロジェクト全体");
+    await until(`${bulk}.textContent.includes("プロジェクト全体の、すべての 7 行（2 個のリソース）に実行します。")`, "プロジェクト全体の行数を数える");
+    check(true, "対象の範囲を「プロジェクト全体」に広げると、すべてのリソースの行数を数え直す（7 行、2 個のリソース）");
+    await evaluate(`__t.setValue(document.querySelector("#match-batch-size"), "3"), true`);
+    await click(`__t.button(/^7 行に実行$/, ${bulk})`, "7 行に実行");
+    await until(`${bulk}.textContent.includes("終わりました。")`, "一括の生成が終わる", 60_000);
+    const bulkStatus = await evaluate(`${bulk}.querySelector('[role="status"]').textContent`);
+    check(bulkStatus.includes("対象のセル 7 / キャッシュにあり生成しなかったセル 1 / 生成したセル 6 / エラー 0 件"), "結果を数で出す（生成済みの 1 行は、もう一度は生成しない）", bulkStatus);
+    const batchSizes = llmRequests.slice(1).map((r) => JSON.parse(r.user).length);
+    check(JSON.stringify(batchSizes) === JSON.stringify([3, 3]), "まとめて送る行数を 3 にすると、リソースごとに、3 行を 1 回の要求で送る", batchSizes);
+    await click(`__t.all("button", ${bulk}).filter((b) => __t.name(b) === "閉じる").at(-1)`, "閉じる");
+    await until(`${badges(0)} === "最新,最新,最新,最新"`, "すべての行の機械翻訳が出る");
+    check((await evaluate(`${genCell(3, 0)}.textContent`)).includes("訳:소지금"), "まとめて送っても、行ごとに自分の本文の翻訳が入る");
+
+    // ---- 翻訳の評価を、このリソースに実行する
+    const sent = llmRequests.length;
+    await click(`__t.button(/^一括アクション ▾$/)`, "一括アクション");
+    await click(`__t.all('[role="menu"] [role="menuitem"]').find((b) => b.textContent.trim() === "翻訳の評価 を生成（韓国語）")`, "翻訳の評価 を生成（韓国語）");
+    const evalDialog = `__t.dialog(/^一括アクション: 翻訳の評価 を生成/)`;
+    await until(`!!${evalDialog}`, "確かめる窓（評価）");
+    await click(`__t.button(/^4 行に実行$/, ${evalDialog})`, "4 行に実行");
+    await until(`${evalDialog}.textContent.includes("終わりました。")`, "評価が終わる", 60_000);
+    await click(`__t.all("button", ${evalDialog}).filter((b) => __t.name(b) === "閉じる").at(-1)`, "閉じる");
+    await until(`${badges(1)} === "最新,最新,最新,最新"`, "すべての行の評価が出る");
+    const verdicts = await evaluate(`__t.all("[data-row]").map((r) => r.querySelectorAll(".k-generated")[1]?.querySelector(".chip-label")?.textContent).filter((t) => t !== undefined)`);
+    check(JSON.stringify(verdicts) === JSON.stringify(["OK", "NG", "WARNING", "OK"]), "翻訳の評価の列に、OK / NG / WARNING の判定が、色つきの札で出る", verdicts);
+    check((await evaluate(`${genCell(1, 1)}.querySelector(".review-note-text")?.textContent`)) === "理由: キャンセル", "判定の理由が、判定の横に出る");
+    const evalRequests = llmRequests.slice(sent).map((r) => JSON.parse(r.user));
+    check(evalRequests.length === 4 && evalRequests.some((r) => r.source === "キャンセル" && r.translation === "취소"), "評価は、原文（基にする言語の本文）と訳文を、1 組ずつ送る", evalRequests);
+
+    // ---- 本文が変わると、機械翻訳と評価に「変更あり」の印が出る
+    await evaluate(`__t.all('[data-row="0"] .k-text')[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true })), true`);
+    await until(`!!document.querySelector("#edit-textarea")`, "編集モーダルが開く");
+    await evaluate(`__t.setValue(document.querySelector("#edit-textarea"), "확인!"), true`);
+    await click(`__t.button(/^確定 /)`, "確定");
+    await until(`!document.querySelector("#edit-textarea")`, "編集モーダルが閉じる");
+    await until(`${badge(0, 0)} === "変更あり" && ${badge(0, 1)} === "変更あり"`, "本文を変えた行の印が「変更あり」になる");
+    check((await evaluate(`${genCell(0, 0)}.textContent`)).includes("訳:확인") && (await evaluate(badges(0))) === "変更あり,最新,最新,最新", "本文を変えると、その行の機械翻訳と評価に「変更あり」の印が出る（前の結果は残り、ほかの行は最新のまま）", await evaluate(badges(0)));
+
+    // ---- プロンプトを、設定の画面で変える
+    const settings = `__t.dialog(/^設定$/)`;
+    const llmForm = `document.querySelector('[role="dialog"] section[aria-label="プラグイン @loc-studio/plugin-llm の設定"]')`;
+    const field = (label) => `${llmForm}?.querySelector('#' + CSS.escape([...${llmForm}.querySelectorAll("label")].find((l) => l.textContent.trim() === ${JSON.stringify(label)})?.htmlFor ?? "none"))`;
+    await click(`__t.button(/^設定$/)`, "設定");
+    await until(`!!${settings}`, "設定の画面");
+    await click(`__t.all('[role="tab"]', ${settings}).find((t) => t.textContent.trim() === "プラグインの設定")`, "「プラグインの設定」のタブ");
+    await until(`!!${llmForm}`, "LLM のプラグインの設定の欄が出る");
+    const promptField = field("機械翻訳: プロンプト");
+    check((await evaluate(`${promptField}?.tagName`)) === "TEXTAREA", "プロンプトは、複数行の入力欄で編集できる");
+    check(
+      JSON.stringify(await evaluate(`[...${llmForm}.querySelectorAll("label")].map((l) => l.textContent.trim())`)) ===
+        JSON.stringify(["機械翻訳: 訳し先の言語", "機械翻訳: プロンプト", "翻訳の評価: 比べる原文の言語", "翻訳の評価: プロンプト"]),
+      "訳し先、機械翻訳のプロンプト、比べる原文の言語、評価のプロンプトの欄が出る",
+    );
+    await click(`__t.button(/^既定の文章を入力欄に入れる$/, ${llmForm})`, "既定の文章を入力欄に入れる");
+    await until(`${promptField}.value.startsWith("ユーザーが送る文章を{to}に翻訳してください。")`, "既定のプロンプトが入力欄に入る");
+    await evaluate(`__t.setValue(${promptField}, ${promptField}.value + "\\n敬語で訳すこと。"), true`);
+    await click(`__t.button(/^設定を保存$/, ${llmForm})`, "設定を保存");
+    await until(`__t.toasts().some((t) => t.includes("プラグイン「@loc-studio/plugin-llm」の設定を保存しました"))`, "保存したことを知らせる");
+    const llmSettingsFile = path.join(lproject, "loc-studio-plugin-settings", "%40loc-studio%2Fplugin-llm.json");
+    const savedPrompt = JSON.parse(readFileSync(llmSettingsFile, "utf8"));
+    check(Object.keys(savedPrompt).join(",") === "translatePrompt" && savedPrompt.translatePrompt.endsWith("\n敬語で訳すこと。"), "変えたプロンプトが、プラグインの設定ファイルに書かれる", savedPrompt);
+    const afterSave = await evaluate(`fetch("/api/rpc/info", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ params: {} }) }).then((r) => r.json())`);
+    check(afterSave.result?.restricted !== true, "画面から保存したプロンプトは、確認をやり直さずに使える");
+    await click(`__t.all("button", ${settings}).find((b) => __t.name(b) === "閉じる")`, "設定を閉じる");
+    await until(`document.querySelectorAll('[role="dialog"]').length === 0`, "設定が閉じる");
+    await until(`${badges(0)} === "変更あり,変更あり,変更あり,変更あり"`, "プロンプトを変えると、生成済みの結果が「変更あり」になる");
+    check(true, "プロンプトを変えると、前のプロンプトで作った結果に「変更あり」の印が出る");
+    const before = llmRequests.length;
+    await click(`${genCell(1, 0)}?.querySelector("button")`, "機械翻訳のセルの生成のボタン（2 行目）");
+    await until(`!!${genDialog}`, "生成の確認の窓");
+    await click(`__t.button(/^1 件を生成$/, ${genDialog})`, "1 件を生成");
+    await until(`${badge(1, 0)} === "最新"`, "生成し直すと、最新になる");
+    check(llmRequests.length === before + 1 && llmRequests[before].system.includes("敬語で訳すこと。") && llmRequests[before].user === "취소", "生成し直すと、変えたプロンプトを LLM に送る", llmRequests[before]);
+
+    const llmErrors = await evaluate(`__t.toasts().filter((t) => /できませんでした|失敗/.test(t))`);
+    check(llmErrors.length === 0, "操作の途中で、失敗の通知は出ていない", llmErrors);
+    llmServer.kill();
+  }
+
   console.log("== Web モード（ログインと、役割による操作の絞り込み） ==");
   const web = prepareWebMode();
   const wport = await freePort();
@@ -1173,6 +1384,9 @@ try {
   if (browser.exitCode === null) browser.kill();
   server.kill();
   firstServer?.kill();
+  llmServer?.kill();
+  mockLlm?.closeAllConnections();
+  mockLlm?.close();
   webServer?.kill();
   // 止めたブラウザとサーバーがファイルを離すまで、消すのを繰り返す（Windows では、少し遅れて離す）。
   try {

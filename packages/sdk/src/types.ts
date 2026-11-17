@@ -472,6 +472,8 @@ export interface GeneratorInput {
 
 export interface GeneratorOutput {
   value: string;
+  /** 値に添える説明（判定の理由など）。値と一緒にキャッシュされ、表のセルで値の横に出る。 */
+  comment?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -491,6 +493,7 @@ export interface Generator {
   /** そのセルの入力。生成しないセルは null。 */
   input(ctx: GeneratorCellContext): GeneratorInput | null;
   run(inputs: GeneratorInput[], ctx: GeneratorRunContext): Promise<GeneratorOutput[]>;
+  /** run に 1 回で渡す入力の数の既定（省略時は 10）。実行のときに、生成の batchSize で変えられる。 */
   batchSize?: number;
   concurrency?: number;
   retries?: number;
@@ -564,6 +567,14 @@ export interface Action {
   languages?: LanguageId[];
   when?(ctx: ActionContext): boolean;
   run(ctx: ActionContext): Promise<ActionResult>;
+  /**
+   * 複数の行をまとめて処理する（任意。target が "cell" / "row" のアクション）。外部の API に、複数の行を 1 回で送るときに使う。
+   * 実装すると、実行のときのバッチサイズ（runAction の batchSize、コマンドラインの --batch-size、画面の「まとめて送る行数」）が
+   * 2 以上なら、対象の行をその数ずつに分け、まとまりごとに runBatch を 1 回呼ぶ（run は呼ばない）。
+   * items は、run が行ごとに受け取るものと同じ値の配列（行の順）。when が false を返した行は入らない。
+   * バッチサイズが 1（既定）のときは、これまでどおり run を行ごとに呼ぶ。
+   */
+  runBatch?(items: ActionContext[]): Promise<ActionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -807,6 +818,8 @@ export interface PluginSettingDef {
   type: "string" | "number" | "boolean" | "enum";
   /** type: "enum" の選択肢（1 つ以上）。 */
   options?: { value: string; label?: string }[];
+  /** type: "string" の値を、複数行の入力欄で編集する（プロンプトなどの長い文章）。 */
+  multiline?: boolean;
   /** 設定ファイルに値がないときの値。省略すると、値なし（undefined）。 */
   default?: string | number | boolean;
 }

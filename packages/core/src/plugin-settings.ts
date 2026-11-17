@@ -83,6 +83,10 @@ export function validateSettingDefs(defs: unknown): string[] {
     } else if (raw.options !== undefined) {
       problems.push(`${label} の options は、type が enum のときだけ書けます。`);
     }
+    if (raw.multiline !== undefined) {
+      if (typeof raw.multiline !== "boolean") problems.push(`${label} の multiline は true か false にしてください。`);
+      else if (raw.type !== "string") problems.push(`${label} の multiline は、type が string のときだけ書けます。`);
+    }
     if (raw.default !== undefined) {
       const problem = settingValueProblem(raw as unknown as PluginSettingDef, raw.default);
       if (problem) problems.push(`${label} の default は使えません: ${problem}`);

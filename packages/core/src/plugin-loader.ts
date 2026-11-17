@@ -367,6 +367,9 @@ export function validatePluginShape(plugin: unknown): string[] {
           problems.push(`${label} の events は、できごとの種類の配列にしてください。`);
         }
       }
+      if (kind === "action" && obj.runBatch !== undefined && typeof obj.runBatch !== "function") {
+        problems.push(`${label} の runBatch は関数にしてください。`);
+      }
       if (kind === "renderer" && typeof obj.module === "string") {
         const problem = rendererModuleProblem(obj.module);
         if (problem) problems.push(`${label} の module "${obj.module}" は使えません: ${problem}。`);

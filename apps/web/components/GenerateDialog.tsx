@@ -6,7 +6,13 @@ import { useStudio, useToasts } from "@/components/context";
 import { columnLabel, type ColumnDef } from "@/lib/client/model";
 import { canRun } from "@/lib/client/permissions";
 
-/* 生成の確認。先に dryRun で件数（全体 / キャッシュ済み / 実行する）を出し、確認してから始める。 */
+/*
+ * 生成の確認。先に dryRun で件数（全体 / キャッシュ済み / 実行する）を出し、確認してから始める。
+ * 生成器に 1 回で渡す件数（バッチサイズ）は、生成器の既定を入れた状態で出し、ここで変えられる。
+ */
+
+/** バッチサイズに指定できる数の上限（サービス層の上限と同じ。確かめるのはサービス層）。 */
+const MAX_BATCH_SIZE = 1000;
 
 export interface GenerateRequest {
   column: ColumnDef;
@@ -26,6 +32,11 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
   const [scope, setScope] = useState<GenerateParams["scope"]>(req.scope);
   const [counts, setCounts] = useState<{ total: number; cached: number; toRun: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  // まとめて送る件数。件数を数えたときに返る、生成器の既定を入れておく（利用者が書き換えたら、そのまま）。
+  const [batchText, setBatchText] = useState<string | null>(null);
+  const batchValue = batchText === null || batchText.trim() === "" ? undefined : Number(batchText);
+  const batchProblem =
+    batchValue !== undefined && (!Number.isInteger(batchValue) || batchValue < 1 || batchValue > MAX_BATCH_SIZE) ? `1 以上 ${MAX_BATCH_SIZE} 以下の整数で入力してください。` : undefined;
 
   const params = (dryRun: boolean): GenerateParams => ({
     columnId: req.column.id,
@@ -33,6 +44,8 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
     ...(scope !== "project" ? { resourceId: req.resourceId } : {}),
     ...(scope === "cell" || scope === "selection" ? { keys: req.keys } : {}),
     ...(req.column.scope === "language" ? { languages: req.languages } : {}),
+    // 件数は、バッチサイズによらない。実行のときだけ渡す。
+    ...(!dryRun && batchValue !== undefined ? { batchSize: batchValue } : {}),
     dryRun,
   });
 
@@ -41,7 +54,11 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
     setCounts(null);
     api
       .generate(params(true))
-      .then((c) => alive && setCounts({ total: c.total, cached: c.cached, toRun: c.toRun }))
+      .then((c) => {
+        if (!alive) return;
+        setCounts({ total: c.total, cached: c.cached, toRun: c.toRun });
+        setBatchText((cur) => cur ?? String(c.batchSize));
+      })
       .catch((err: unknown) => reportError(err, "件数を数えられませんでした"));
     return () => {
       alive = false;
@@ -50,6 +67,7 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
   }, [scope]);
 
   const start = async () => {
+    if (batchProblem !== undefined) return;
     setBusy(true);
     try {
       const res = await api.generate(params(false));
@@ -75,7 +93,7 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
           <button type="button" className="btn" onClick={onClose}>
             キャンセル
           </button>
-          <button type="button" className="btn primary" disabled={busy || !run.ok || !counts || counts.toRun === 0} title={run.reason} onClick={() => void start()}>
+          <button type="button" className="btn primary" disabled={busy || !run.ok || !counts || counts.toRun === 0 || batchProblem !== undefined} title={run.reason} onClick={() => void start()}>
             {counts && counts.toRun > 0 ? `${counts.toRun} 件を生成` : "生成"}
           </button>
         </>
@@ -114,6 +132,26 @@ export function GenerateDialog({ req, onClose, onStarted }: { req: GenerateReque
           </tbody>
         </table>
       )}
+      <div className="field">
+        <label htmlFor="generate-batch-size" className="field-label">
+          まとめて送る件数（バッチサイズ）
+        </label>
+        <input
+          id="generate-batch-size"
+          className="input small"
+          type="text"
+          inputMode="numeric"
+          value={batchText ?? ""}
+          aria-invalid={batchProblem !== undefined}
+          onChange={(e) => setBatchText(e.target.value)}
+        />
+        <p className="muted small">生成器に、何件分を 1 回で渡すかです。1 なら 1 件ずつ送ります。空なら、生成器の既定で実行します。</p>
+        {batchProblem !== undefined && (
+          <p className="hint-error" role="alert">
+            {batchProblem}
+          </p>
+        )}
+      </div>
     </Dialog>
   );
 }

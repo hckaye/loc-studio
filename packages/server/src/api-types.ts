@@ -2,7 +2,7 @@
  * サービス層の公開の型（画面とコマンドラインが使う DTO）。
  * どの値も JSON にできる形にする（RPC でそのまま返すため）。
  */
-import type { ExtensionKind, PluginLayer, PluginLoadError, Project, SettingSource } from "@loc-studio/core";
+import type { BuiltinPlugin, ExtensionKind, PluginLayer, PluginLoadError, Project, SettingSource } from "@loc-studio/core";
 import type {
   Action,
   ActionResult,
@@ -30,8 +30,8 @@ export interface WorkspaceOptions {
   /** 起動引数由来のローカル設定（"user.name" など）。 */
   cliSettings?: Record<string, unknown>;
   sdkPath?: string;
-  /** builtinPlugin と llmPlugin に加えて登録するもの。 */
-  extraBuiltins?: Plugin[];
+  /** builtinPlugin と llmPlugin に加えて登録するもの。関数なら、設定の値を読む窓口を渡して呼ぶ（BuiltinPlugin）。 */
+  extraBuiltins?: BuiltinPlugin[];
   /** false で個人の設定フォルダ（local 層）のプラグインを読まない（Web モード）。既定 true。 */
   localPlugins?: boolean;
   /** 呼び出しに CallContext があるとき、ローカル設定の代わりに使う利用者ごとの設定。 */
@@ -102,6 +102,8 @@ export interface ActionInfo {
   target: Action["target"];
   columns?: string[];
   languages?: LanguageId[];
+  /** true: 複数の行をまとめて受け取れる（runBatch がある）。実行のときに batchSize を指定できる。 */
+  batch?: boolean;
 }
 
 export interface ProjectInfo {
@@ -195,7 +197,7 @@ export interface CellInfo {
   version?: number;
   updatedAt?: string;
   updatedBy?: string;
-  /** 列ソースが値に添えたコメント（レビュー列なら、最新の投稿のコメント。空なら付かない）。 */
+  /** 値に添えたコメント（レビュー列なら、最新の投稿のコメント。生成列なら、生成器が値に添えた説明。空なら付かない）。 */
   comment?: string;
   /** basisHash が、対象の列のいまの値の版と違う（レビュー列、basis: "text" の列、生成列）。 */
   stale?: boolean;
@@ -371,6 +373,8 @@ export interface PluginSettingsInfo {
     description?: string;
     type: "string" | "number" | "boolean" | "enum";
     options?: { value: string; label?: string }[];
+    /** type: "string" の値を、複数行の入力欄で編集する。 */
+    multiline?: boolean;
     default?: string | number | boolean;
     /** プラグインが受け取る値（設定ファイルの値。なければ default。どちらもなければ、この項目がない）。 */
     value?: string | number | boolean;
@@ -498,6 +502,22 @@ export interface GenerateParams {
   keys?: string[];
   languages?: LanguageId[];
   dryRun?: boolean;
+  /**
+   * 条件に合う行だけを対象にする（scope が resource / project のとき。条件は rows / query と同じで、languages は条件の「対象の言語」）。
+   * 表の絞り込み、検索結果の表示、コマンドラインの generate --where が使う。
+   */
+  filter?: RowFilter & { languages: LanguageId[] };
+  /** 生成器の run に 1 回で渡す入力の数（1 以上の整数）。省略時は、生成器の batchSize（なければ 10）。 */
+  batchSize?: number;
+}
+
+/** generate の結果。batchSize は、実行に使う（dryRun では、使うことになる）バッチサイズ。 */
+export interface GenerateResult {
+  jobId?: string;
+  total: number;
+  cached: number;
+  toRun: number;
+  batchSize: number;
 }
 
 /** 登録済みの拡張のうち、設定の画面で選べるもの。 */
@@ -517,6 +537,11 @@ export interface RunActionParams {
   filter?: RowFilter & { languages: LanguageId[] };
   cellId?: string;
   language?: LanguageId;
+  /**
+   * 1 回の呼び出しにまとめる行の数（1 以上の整数。既定は 1）。2 以上は、target が cell / row で、
+   * 複数の行をまとめて受け取れるアクション（runBatch がある。ActionInfo.batch）だけで使える。
+   */
+  batchSize?: number;
 }
 
 export interface RunActionResult {
@@ -612,7 +637,7 @@ export interface WorkspaceApi {
   }): Promise<ReviewInfo>;
   forwardReview(params: { resourceId: string; key: string; cellId: string; reviewId: string; actionId: string }): Promise<ReviewInfo>;
   runAction(params: RunActionParams): Promise<RunActionResult>;
-  generate(params: GenerateParams): Promise<{ jobId?: string; total: number; cached: number; toRun: number }>;
+  generate(params: GenerateParams): Promise<GenerateResult>;
   cancelJob(params: { id: string }): Promise<JobInfo>;
   /**
    * 行を足す・消す・キーを変える（書いた順に当て、すぐリソースに書く）。フォーマットが対応していない変更は failed。

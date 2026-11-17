@@ -72,7 +72,9 @@
 | CSV / TSV の見出しと言語を対応づける | `formats[].options`（[CONFIG.md の formats](CONFIG.md#formats)） |
 | 共有 DB に置く列を足す | `{ "id": "...", "kind": "meta", "scope": "entry", "type": "string", "source": "builtin.db" }`（[CONFIG.md の columns](CONFIG.md#columns)） |
 | 文字数の列を出す | `{ "use": "builtin.length", "id": "length" }` |
-| LLM で翻訳した値を生成列に出す | `llm.translate`（[CONFIG.md の generators](CONFIG.md#generators)） |
+| LLM で翻訳した値を生成列に出す（機械翻訳、逆翻訳） | `llm.translation` の列と `llm.translate`（[CONFIG.md の generators](CONFIG.md#llm-で機械翻訳と翻訳の評価をする)） |
+| LLM に、訳文を原文と比べて OK / WARNING / NG で判定させる | `llm.evaluation` の列と `llm.evaluate`（同じ節） |
+| LLM に渡すプロンプトを変える | 設定の画面の「プラグインの設定」（[CONFIG.md](CONFIG.md#プロンプトなどの設定プラグインの設定)） |
 
 ## 作る手順
 

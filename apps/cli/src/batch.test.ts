@@ -50,6 +50,21 @@ export default {
       target: "file",
       async run(ctx) { return { message: ctx.entries.length + " 行あります" }; },
     },
+    {
+      // 行をまとめて受け取れるアクション。まとまりの行数を、options.batchLog のファイルに 1 行ずつ残す。
+      id: "fake.markBatch",
+      label: "まとめて作業中にする",
+      target: "cell",
+      columns: ["textStatus"],
+      async run(ctx) {
+        appendFileSync(ctx.options.batchLog, "run\\n");
+        return { patches: [{ resourceId: ctx.entry.resource.id, entryKey: ctx.entry.key, columnId: "textStatus", language: ctx.language.id, value: "wip" }] };
+      },
+      async runBatch(items) {
+        appendFileSync(items[0].options.batchLog, items.length + "\\n");
+        return { patches: items.map((item) => ({ resourceId: item.entry.resource.id, entryKey: item.entry.key, columnId: "textStatus", language: item.language.id, value: "wip" })) };
+      },
+    },
   ],
 };
 `;
@@ -59,6 +74,7 @@ let project: string;
 let userDataDir: string;
 let counter: string;
 let failFile: string;
+let batchLog: string;
 const opened: Workspace[] = [];
 
 async function cli(args: string[], extra: string[] = []) {
@@ -80,6 +96,8 @@ const openWs = async (): Promise<Workspace> => {
 };
 
 const calls = async (): Promise<number> => (await readFile(counter, "utf8").catch(() => "")).length;
+/** fake.markBatch の呼ばれ方（まとまりの行数。行ごとに呼ばれたら "run"）。 */
+const batches = async (): Promise<string[]> => (await readFile(batchLog, "utf8").catch(() => "")).split("\n").filter((s) => s !== "");
 
 interface StatusJson {
   resources: {
@@ -97,6 +115,7 @@ beforeEach(async () => {
   userDataDir = path.join(tmp, "user");
   counter = path.join(tmp, "calls.txt");
   failFile = path.join(tmp, "fail.flag");
+  batchLog = path.join(tmp, "batches.txt");
   await cp(sample, project, { recursive: true });
   await writeFile(path.join(project, "loc-studio-plugins", "fake-batch.mjs"), FAKE_PLUGIN);
   const file = path.join(project, "loc-studio.project.json");
@@ -104,7 +123,7 @@ beforeEach(async () => {
   config.columns.push({ id: "back", kind: "generated", scope: "language", generator: "backTr", languages: ["JaEnglish", "ko"] });
   Object.assign(config, {
     generators: { backTr: { use: "fake.reverse", options: { counter, failFile } } },
-    actions: ["fake.mark", "fake.count"],
+    actions: ["fake.mark", "fake.count", { use: "fake.markBatch", options: { batchLog } }],
   });
   await writeFile(file, JSON.stringify(config, null, 2));
 });
@@ -274,6 +293,74 @@ describe("generate", () => {
     expect(d.errors[0]).toContain("生成に失敗");
   });
 
+  it("--batch-size で、生成器に 1 回で渡す件数を変える（省略時は生成器の既定）", async () => {
+    // 生成器の既定（10 件）では、4 件を 1 回で渡す。
+    await cli(["generate", "back"], ["--resources", "**/ui.csv", "--languages", "ko"]);
+    expect(await calls()).toBe(1);
+    // 1 件ずつなら 4 回、3 件ずつなら 2 回。
+    const one = await cli(["generate", "back", "--json"], ["--resources", "**/ui.csv", "--languages", "JaEnglish", "--batch-size", "1"]);
+    expect(JSON.parse(one.stdout)).toMatchObject({ total: 4, cached: 0, generated: 4, failed: 0 });
+    expect(await calls()).toBe(1 + 4);
+    await cli(["generate", "back"], ["--resources", "**/chapter01.csv", "--languages", "JaEnglish", "--batch-size", "3"]);
+    // chapter01.csv の英語は 8 行: 3、3、2 の 3 回。
+    expect(await calls()).toBe(1 + 4 + 3);
+  });
+
+  it("--where: 条件に合う行だけを生成する（リソースを絞っても、プロジェクト全体でも）", async () => {
+    const one = await cli(["generate", "back", "--json"], ["--resources", "**/ui.csv", "--languages", "ko", "--where", "key = UI_OK or key ~ GOLD"]);
+    expect(one.code).toBe(0);
+    expect(JSON.parse(one.stdout)).toMatchObject({ total: 2, cached: 0, generated: 2, failed: 0 });
+    // まだ生成していない行だけ（プロジェクト全体。韓国語の本文のある行は 11 行で、2 行は生成済み）。
+    const rest = await cli(["generate", "back", "--json"], ["--languages", "ko", "--where", "back@ko is empty"]);
+    expect(JSON.parse(rest.stdout)).toMatchObject({ total: 9, cached: 0, generated: 9, failed: 0 });
+    const ws = await openWs();
+    const rows = await ws.rows({ resourceId: UI, languages: ["ko", "JaEnglish"], offset: 0, limit: 10 });
+    expect(rows.rows.map((r) => r.cells["back@ko"]!.generated)).toEqual(["fresh", "fresh", "fresh", "fresh"]);
+    // 条件の対象でない言語は、生成しない。
+    expect(rows.rows.map((r) => r.cells["back@JaEnglish"]!.generated)).toEqual(["missing", "missing", "missing", "missing"]);
+    // 条件に合う行がなければ、何も生成せずに 0。
+    const none = await cli(["generate", "back"], ["--languages", "ko", "--where", "key = NOPE"]);
+    expect(none.code).toBe(0);
+    expect(none.stdout).toContain("全体 0 / キャッシュ済み 0 / 生成 0 / 失敗 0");
+  });
+
+  it("--keys: そのキーの行だけを、その行のあるリソースで生成する", async () => {
+    const r = await cli(["generate", "back", "--json"], ["--languages", "ko", "--keys", "UI_OK,CH01_INTRO_001,NOPE"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ total: 2, cached: 0, generated: 2, failed: 0 });
+    const ws = await openWs();
+    const ui = await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10 });
+    expect(ui.rows.map((row) => [row.key, row.cells["back@ko"]!.generated])).toEqual([
+      ["UI_OK", "fresh"],
+      ["UI_CANCEL", "missing"],
+      ["UI_SAVE_CONFIRM", "missing"],
+      ["UI_GOLD", "missing"],
+    ]);
+    const chapter = await ws.rows({ resourceId: CHAPTER, languages: ["ko"], offset: 0, limit: 2 });
+    expect(chapter.rows.map((row) => row.cells["back@ko"]!.generated)).toEqual(["fresh", "missing"]);
+  });
+
+  it("--where と --keys の併用、どのリソースにもないキー、誤った式、誤った --batch-size は 2 で、何も生成しない", async () => {
+    const both = await cli(["generate", "back"], ["--where", "key = UI_OK", "--keys", "UI_OK"]);
+    expect(both.code).toBe(2);
+    expect(both.stderr).toContain("--where と --keys は、どちらか一方だけを指定してください。");
+    const noKey = await cli(["generate", "back"], ["--keys", "NOPE"]);
+    expect(noKey.code).toBe(2);
+    expect(noKey.stderr).toContain("--keys NOPE の行が、対象のリソースにありません。");
+    const badWhere = await cli(["generate", "back"], ["--where", "nope = 1"]);
+    expect(badWhere.code).toBe(2);
+    expect(badWhere.stderr).toContain('条件式の "nope" に当たる列がありません');
+    for (const size of ["0", "1.5", "abc"]) {
+      const bad = await cli(["generate", "back"], ["--batch-size", size]);
+      expect(bad.code).toBe(2);
+      expect(bad.stderr).toContain(`--batch-size には 1 以上の整数を指定してください: ${size}`);
+    }
+    const tooBig = await cli(["generate", "back"], ["--batch-size", "1001"]);
+    expect(tooBig.code).toBe(2);
+    expect(tooBig.stderr).toContain("batchSize は 1 以上 1000 以下の整数で指定してください");
+    expect(await calls()).toBe(0);
+  });
+
   it("生成列でない列・ない列・ない言語・一致しない glob", async () => {
     expect((await cli(["generate", "textStatus"])).code).toBe(2);
     expect((await cli(["generate", "nope"])).code).toBe(2);
@@ -294,6 +381,34 @@ describe("run", () => {
     expect(d.row.cells["textStatus@ja"]!.value).toBe("todo");
     const h = await ws.history({ resourceId: UI, key: "UI_OK", cellId: "textStatus@ko" });
     expect(h[0]).toMatchObject({ cause: "action", causeRef: "fake.mark" });
+  });
+
+  it("--batch-size: 行をまとめて受け取れるアクションを、その行数ごとにまとめて呼ぶ（省略時は 1 行ずつ）", async () => {
+    const r = await cli(["run", "fake.markBatch", "--json"], ["--resources", "**/ui.csv", "--languages", "ko", "--batch-size", "3"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ actionId: "fake.markBatch", patched: 4, failed: 0 });
+    // 4 行を 3 行ずつ: 3 行と 1 行。
+    expect(await batches()).toEqual(["3", "1"]);
+    const ws = await openWs();
+    const rows = await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10 });
+    expect(rows.rows.map((row) => row.cells["textStatus@ko"]!.value)).toEqual(["wip", "wip", "wip", "wip"]);
+    // 省略すると、行ごとに呼ぶ。
+    await cli(["run", "fake.markBatch"], ["--resources", "**/ui.csv", "--languages", "JaEnglish", "--keys", "UI_OK,UI_GOLD"]);
+    expect(await batches()).toEqual(["3", "1", "run", "run"]);
+  });
+
+  it("--batch-size を、行をまとめて受け取れないアクションに付けると 2 で、何も変えない", async () => {
+    const plain = await cli(["run", "fake.mark"], ["--resources", "**/ui.csv", "--languages", "ko", "--batch-size", "2"]);
+    expect(plain.code).toBe(2);
+    expect(plain.stderr).toContain('アクション "fake.mark" は、複数の行をまとめて受け取れないので、--batch-size は使えません（1 行ずつ実行します）。');
+    const file = await cli(["run", "fake.count"], ["--batch-size", "2"]);
+    expect(file.code).toBe(2);
+    expect(file.stderr).toContain('アクション "fake.count"（target: file）は、対象の行をまとめて 1 回で受け取るので、--batch-size は使えません。');
+    const ws = await openWs();
+    const rows = await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 10 });
+    expect(rows.rows.map((row) => row.cells["textStatus@ko"]!.value)).toEqual(["todo", "todo", "todo", "todo"]);
+    // 1 なら、どのアクションでも使える（1 行ずつ）。
+    expect((await cli(["run", "fake.mark"], ["--resources", "**/ui.csv", "--languages", "ko", "--batch-size", "1"])).code).toBe(0);
   });
 
   it("--keys で行を絞る", async () => {

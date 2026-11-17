@@ -905,6 +905,7 @@ function StudioInner({
                   targets={[{ resourceId, path: resourceNames.get(resourceId) ?? resourceId }]}
                   rows={rows.total}
                   scope="このリソース"
+                  allowProject
                   onDone={refreshAll}
                   onJob={jobs.track}
                 />

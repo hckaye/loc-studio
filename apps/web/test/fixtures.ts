@@ -115,7 +115,7 @@ export function mockApi(info: ProjectInfo, rowCount = 3) {
     }),
     forwardReview: vi.fn(),
     runAction: vi.fn(async (_params: Parameters<WorkspaceApi["runAction"]>[0]): Promise<R<"runAction">> => ({ patched: 0 })),
-    generate: vi.fn(async () => ({ total: 1, cached: 0, toRun: 1 })),
+    generate: vi.fn(async (_params: Parameters<WorkspaceApi["generate"]>[0]): Promise<R<"generate">> => ({ total: 1, cached: 0, toRun: 1, batchSize: 1 })),
     cancelJob: vi.fn(),
     editEntries: vi.fn(async (): Promise<R<"editEntries">> => ({ entries: rowCount })),
     createResource: vi.fn(async ({ path }: { path: string }): Promise<R<"createResource">> => ({ resource: { id: path, path, name: path.split("/").pop()! } })),

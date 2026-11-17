@@ -93,7 +93,7 @@ afterEach(async () => {
 describe("generate", () => {
   it("dryRun は件数だけ、生成のあとは fresh、2 回目はキャッシュ", async () => {
     const dry = await ws.generate({ columnId: "back", scope: "resource", resourceId: UI, dryRun: true });
-    expect(dry).toEqual({ total: 8, cached: 0, toRun: 8 });
+    expect(dry).toEqual({ total: 8, cached: 0, toRun: 8, batchSize: 2 });
     expect(gen.calls).toBe(0);
     let r = await ws.rows({ resourceId: UI, languages: ["ko"], offset: 0, limit: 1 });
     expect(r.rows[0]!.cells["back@ko"]).toEqual({ value: undefined, generated: "missing" });
@@ -107,7 +107,7 @@ describe("generate", () => {
     expect(r.rows[0]!.cells["back@ko"]).toEqual({ value: "인확!", generated: "fresh" });
 
     const again = await ws.generate({ columnId: "back", scope: "resource", resourceId: UI });
-    expect(again).toEqual({ total: 8, cached: 8, toRun: 0 });
+    expect(again).toEqual({ total: 8, cached: 8, toRun: 0, batchSize: 2 });
     expect(gen.calls).toBe(4);
     expect((await ws.jobs()).map((j) => j.id)).toContain(run.jobId);
     expect(await ws.job({ id: run.jobId! })).toMatchObject({ status: "done" });

@@ -46,7 +46,9 @@ describe("表", () => {
     expect(cell(container, 0, ".k-number").textContent).toBe("10");
     const gen = cell(container, 0, ".k-generated");
     expect(gen.textContent).toContain("back 0");
-    expect(within(gen).getByText("古い")).toBeTruthy();
+    // 生成のあとで本文が変わった結果には、レビューと同じ「変更あり」の印を出す（理由は、ツールチップに出す）。
+    expect(within(gen).getByText("変更あり").getAttribute("title")).toBe("生成結果: 変更あり（生成のあとで、元の本文や設定が変わりました。生成し直すと、最新になります）");
+    expect(within(cell(container, 1, ".k-generated")).getByText("最新").getAttribute("title")).toBe("生成結果: 最新（いまの本文から生成した結果です）");
     expect(within(cell(container, 0, ".k-actions")).getByRole("button", { name: "チケット" })).toBeTruthy();
     // 言語グループの見出し
     expect(screen.getByRole("button", { name: "日本語 の固定を外す" })).toBeTruthy();
@@ -508,6 +510,73 @@ describe("生成列とアクション列", () => {
     const start = await within(dialog).findByRole("button", { name: "1 件を生成" });
     fireEvent.click(start);
     await waitFor(() => expect(api.generate).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false })));
+  });
+
+  it("生成の確認では、まとめて送る件数に、生成器の既定が入っている。書き換えた数を、生成に渡す", async () => {
+    const { container, api } = await renderStudio({}, (api) => {
+      api.generate.mockResolvedValue({ total: 9, cached: 1, toRun: 8, batchSize: 4 });
+    });
+    fireEvent.click(within(cell(container, 0, ".k-generated")).getByRole("button", { name: /を生成/ }));
+    const dialog = await screen.findByRole("dialog", { name: "生成: 逆翻訳" });
+    const batch = (await within(dialog).findByLabelText("まとめて送る件数（バッチサイズ）")) as HTMLInputElement;
+    // 件数を数えたときに返る、生成器の既定。
+    await waitFor(() => expect(batch.value).toBe("4"));
+    // 誤った値では、理由を出して、始められない。
+    fireEvent.change(batch, { target: { value: "0" } });
+    expect(within(dialog).getByRole("alert").textContent).toBe("1 以上 1000 以下の整数で入力してください。");
+    expect((within(dialog).getByRole("button", { name: "8 件を生成" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(batch, { target: { value: "20" } });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    const start = within(dialog).getByRole("button", { name: "8 件を生成" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(api.generate).toHaveBeenLastCalledWith({ columnId: "back", scope: "cell", resourceId: "res.csv", keys: ["KEY_0"], languages: ["en"], batchSize: 20, dryRun: false }));
+    // 件数を数える呼び出しには、まとめて送る件数を付けない。
+    expect(api.generate.mock.calls.filter((c) => c[0].dryRun === true).every((c) => c[0].batchSize === undefined)).toBe(true);
+  });
+
+  it("選択式の生成列（判定など）は、選択肢の色と表示名で出し、生成器が添えた説明を横に出す", async () => {
+    const base = makeInfo();
+    const { container } = await renderStudio(
+      {
+        // 逆翻訳の列の場所に、評価の列を置く。
+        columns: base.columns.map((c) =>
+          c.id === "back"
+            ? {
+                id: "check",
+                kind: "generated" as const,
+                scope: "language" as const,
+                label: "翻訳の評価",
+                generator: "eval",
+                languages: ["en"],
+                type: { enum: [{ value: "OK", label: "問題なし", color: "green" }, { value: "NG", label: "要修正", color: "red" }] },
+              }
+            : c,
+        ),
+      },
+      (api) => {
+        const rows = api.rows.getMockImplementation()!;
+        api.rows.mockImplementation(async (req) => {
+          const page = await rows(req);
+          page.rows.forEach((row, i) => {
+            row.cells["check@en"] = i === 0 ? { value: "NG", comment: "主語が逆になっています。", generated: "stale", stale: true } : i === 1 ? { value: "OK", generated: "fresh" } : { value: undefined, generated: "missing" };
+          });
+          return page;
+        });
+      },
+    );
+    const ng = cell(container, 0, ".k-generated");
+    expect(ng.querySelector(".chip-label")?.textContent).toBe("要修正");
+    expect(within(ng).getByText("主語が逆になっています。").closest(".review-note")?.getAttribute("title")).toBe("主語が逆になっています。");
+    expect(within(ng).getByText("変更あり")).toBeTruthy();
+    const ok = cell(container, 1, ".k-generated");
+    expect(ok.querySelector(".chip-label")?.textContent).toBe("問題なし");
+    expect(ok.querySelector(".review-note")).toBeNull();
+    expect(within(ok).getByText("最新")).toBeTruthy();
+    // 生成していないセルには、値も説明も出さない。
+    const none = cell(container, 2, ".k-generated");
+    expect(none.querySelector(".chip")).toBeNull();
+    expect(within(none).getByText("未生成")).toBeTruthy();
   });
 });
 

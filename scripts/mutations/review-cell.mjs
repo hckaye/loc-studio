@@ -26,7 +26,7 @@ export default [
   { name: "空のコメントも表に渡す", file: PANEL, from: "        ...(res.comment !== \"\" ? { comment: res.comment } : {}),\n", to: "        comment: res.comment,\n", tests: PANEL_TEST },
   { name: "投稿者を表に渡さない", file: PANEL, from: "        updatedBy: res.userName,\n", to: "", tests: `${PANEL_TEST} ${STUDIO_TEST}` },
   // ---- 表のセル
-  { name: "セルにコメントを出さない", file: CELLS, from: "          {note !== undefined && (", to: "          {false && (", tests: STUDIO_TEST },
+  { name: "セルにコメントを出さない", file: CELLS, from: "          {note !== undefined && (\n            <span className=\"review-note\" title={cell?.updatedBy", to: "          {false && (\n            <span className=\"review-note\" title={cell?.updatedBy", tests: STUDIO_TEST },
   { name: "選択式の列にもコメントを出す", file: CELLS, from: "const note = gc.kind === \"review\" && typeof cell?.comment === \"string\"", to: "const note = typeof cell?.comment === \"string\"", tests: STUDIO_TEST },
   { name: "セルに投稿者を出さない", file: CELLS, from: "{cell?.updatedBy && <span className=\"review-note-by\">{cell.updatedBy}</span>}", to: "", tests: STUDIO_TEST },
   { name: "ツールチップに投稿者を入れない", file: CELLS, from: "title={cell?.updatedBy ? `${cell.updatedBy}: ${note}` : note}", to: "title={note}", tests: STUDIO_TEST },

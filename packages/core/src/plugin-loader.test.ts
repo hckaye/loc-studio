@@ -234,4 +234,11 @@ describe("validatePluginShape", () => {
     expect(problems.some((p) => p.includes('"s"') && p.includes("save"))).toBe(true);
     expect(problems.some((p) => p.includes('"s"') && p.includes("saveMode"))).toBe(true);
   });
+
+  it("アクションの runBatch（行をまとめて受け取る関数）は任意。書くなら関数にする", () => {
+    const fn = () => undefined;
+    const action = { id: "a", label: "A", target: "cell", run: fn };
+    expect(validatePluginShape({ name: "ok", actions: [action, { ...action, id: "b", runBatch: fn }] })).toEqual([]);
+    expect(validatePluginShape({ name: "bad", actions: [{ ...action, runBatch: true }] })).toEqual(['actions[0]（"a"） の runBatch は関数にしてください。']);
+  });
 });

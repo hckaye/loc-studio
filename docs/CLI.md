@@ -157,7 +157,7 @@ init には --languages が必要です（例: --languages ja=日本語,en=Engli
 $ node apps/cli/dist/index.js plugins --project /tmp/sample --user-data-dir /tmp/ud
 プラグイン:
   @loc-studio/builtin  0.1.0  [builtin]  (同梱)
-  @loc-studio/plugin-llm  0.1.0  [builtin]  (同梱)
+  @loc-studio/plugin-llm  0.2.0  [builtin]  (同梱)
   mystudio-line-width  1.0.0  [project]  /tmp/sample/loc-studio-plugins/line-width.ts
   studio-pack  1.2.0  [project]  /tmp/sample/loc-studio-plugins/studio-pack
 
@@ -170,6 +170,7 @@ $ node apps/cli/dist/index.js plugins --project /tmp/sample --user-data-dir /tmp
   ...
   generator:
     llm.translate  <- @loc-studio/plugin-llm [builtin]
+    llm.evaluate  <- @loc-studio/plugin-llm [builtin]
   validator:
     builtin.placeholders  <- @loc-studio/builtin [builtin]
     ...
@@ -377,6 +378,9 @@ $ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/u
 | --- | --- |
 | `--resources <glob>` | 対象のリソース。指定すると 1 リソースにつき 1 ジョブ。省略するとプロジェクト全体で 1 ジョブ。一致するリソースがなければ終了コード 2 |
 | `--languages <a,b>` | 対象の言語 ID |
+| `--keys <k1,k2>` | 対象のキー。そのキーの行だけを、その行のあるリソースで生成する。どのリソースにもなければ終了コード 2。`--where` とは併用できない |
+| `--where <式>` | 条件に合う行だけを生成する。式は `query` と同じ（[QUERY.md](QUERY.md#条件式の書き方)）。`--resources` を省くと、プロジェクトのすべてのリソースから、条件に合う行を探す |
+| `--batch-size <n>` | 生成器に 1 回で渡す件数（1 以上 1000 以下の整数）。省略すると、生成器の既定（同梱の `llm.translate` と `llm.evaluate` は 1 件ずつ） |
 | `--dry-run` | 件数（全体 / キャッシュ済み / 実行する分）だけ表示して終了する。生成器は呼ばれない |
 
 キャッシュにある分は飛ばします。ジョブは進み具合が変わるたびに、標準エラー出力へ 1 行出します。失敗があれば終了コード 1 です。
@@ -399,6 +403,56 @@ back: 全体 4 / キャッシュ済み 0 / 生成 0 / 失敗 4
 
 このとき終了コードは 1 です。`--json` は `{ "columnId", "total", "cached", "generated", "failed", "errors" }`（`--dry-run` では `{ "columnId", "dryRun": true, "total", "cached", "toRun" }`）です。列がない、生成列でない、生成列の生成器が見つからない場合は、終了コード 2 です。
 
+`--where` は、条件に合う行だけを生成します。式の中で言語を書かない欄は、`--languages` の言語だけを見ます（省くと、すべての言語）。まだ生成していない行だけを生成する、検証の問題のある行だけを評価し直す、といった使い方ができます。`--batch-size` は、外部の API に、何件分を 1 回で送るかを決めます。
+
+次は、同梱の LLM の生成器（[CONFIG.md の generators](CONFIG.md#llm-で機械翻訳と翻訳の評価をする)）で、機械翻訳の列 `mt` と、翻訳の評価の列 `mtCheck` を、サンプルのプロジェクトの韓国語に足したときの出力です。接続先は、手元に立てた OpenAI 互換のサーバー（決まった返事を返すもの）です。
+
+```
+$ node apps/cli/dist/index.js generate mt --project /tmp/sample --user-data-dir /tmp/ud --dry-run --languages ko
+mt（ドライラン）: 全体 11 / キャッシュ済み 0 / 実行する分 11
+$ node apps/cli/dist/index.js generate mt --project /tmp/sample --user-data-dir /tmp/ud --languages ko --resources "**/ui.csv"
+mt: 全体 4 / キャッシュ済み 0 / 生成 4 / 失敗 0
+$ node apps/cli/dist/index.js generate mt --project /tmp/sample --user-data-dir /tmp/ud --languages ko --where "mt@ko is empty" --batch-size 4
+mt: 全体 7 / キャッシュ済み 0 / 生成 7 / 失敗 0
+$ node apps/cli/dist/index.js generate mtCheck --project /tmp/sample --user-data-dir /tmp/ud --languages ko --batch-size 5
+mtCheck: 全体 11 / キャッシュ済み 0 / 生成 11 / 失敗 0
+```
+
+2 つ目の実行は、`ui.csv` の 4 行を 1 件ずつ送りました（要求 4 回）。3 つ目は、まだ機械翻訳のない 7 行を、4 件ずつにまとめて送りました（4 件と 3 件の、要求 2 回）。4 つ目は、11 行の評価を、5 件ずつにまとめて送りました（5 件、5 件、1 件の、要求 3 回）。評価の結果は、`query` で数えたり、絞り込んだりできます。
+
+```
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --languages ko --group-by mtCheck@ko
+条件に合う行: 12 / 12 行（原文 129 文字 / 15 語）
+  Assets/Text/system/ui.csv: 4 / 4
+  Assets/Text/chapter01.csv: 8 / 8
+
+集計（mtCheck@ko）:
+  OK: 8 行（99 文字 / 11 語）
+  WARNING: 2 行（17 文字 / 2 語）
+  NG: 1 行（5 文字 / 1 語）
+  （空）: 1 行（8 文字 / 1 語）
+$ node apps/cli/dist/index.js query --project /tmp/sample --user-data-dir /tmp/ud --languages ko --where "mtCheck@ko >= WARNING" --limit 5 --columns text@ja,text@ko,mtCheck@ko
+条件に合う行: 3 / 12 行（原文 22 文字 / 3 語）
+  Assets/Text/system/ui.csv: 2 / 4
+  Assets/Text/chapter01.csv: 1 / 8
+
+行:
+  Assets/Text/system/ui.csv  UI_CANCEL
+    text@ja: キャンセル
+    text@ko: 취소
+    mtCheck@ko: NG
+  Assets/Text/system/ui.csv  UI_SAVE_CONFIRM
+    text@ja: セーブしますか？
+    text@ko: 저장하시겠습니까?
+    mtCheck@ko: WARNING
+  Assets/Text/chapter01.csv  CH01_INTRO_002
+    text@ja: ここは……どこだ？
+    text@ko: 여기는…… 어디지?
+    mtCheck@ko: WARNING
+```
+
+「（空）」の 1 行は、韓国語の本文が空で、評価していない行です。判定は、この確認用のサーバーが訳文の文字から機械的に決めたもので、実際のモデルの判定ではありません。
+
 ### run
 
 アクションを、リソースに対して実行します。引数は、設定の `actions` にあるアクションの ID です。`target: "review"` のアクション（レビューの転載先）は、`run` では使えません。
@@ -410,6 +464,7 @@ back: 全体 4 / キャッシュ済み 0 / 生成 0 / 失敗 4
 | `--keys <k1,k2>` | 対象のキー（`cell` / `row` / `selection` 対象）。省略すると全行 |
 | `--where <式>` | 条件に合う行だけを対象にする（`cell` / `row` / `selection` 対象）。式は `query` と同じ（[QUERY.md](QUERY.md#条件式の書き方)）。`--keys` とは併用できない |
 | `--column <id>` | `cell` / `column` 対象のアクションで使う列。省略するとアクションの `columns` |
+| `--batch-size <n>` | 1 回の呼び出しにまとめる行の数（1 以上 1000 以下の整数。既定は 1 行ずつ）。2 以上は、複数の行をまとめて受け取れるアクション（`runBatch` を実装した `cell` / `row` 対象のアクション。[plugins/action.md](plugins/action.md#行をまとめて受け取るrunbatch)）だけで使える。ほかのアクションに付けると終了コード 2 |
 
 ```
 $ node apps/cli/dist/index.js run mystudio.trim --project /tmp/sample --user-data-dir /tmp/ud --user alice --resources "**/ui.csv" --column text --languages ja --keys UI_PAD
@@ -629,4 +684,6 @@ node apps/cli/dist/index.js validate --project . --fail-on error --json > valida
 - `query` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピーに対して実行して得たものです（`--where`、`--group-by`、`--limit`、`--columns`、`--format csv`、`--out`、`--bom`、誤った式）。集計の例は、先に `set textStatus@ko done --keys UI_OK,UI_CANCEL` を実行したあとの出力です。書き出し先のパスは、例に合わせて書き換えています。読めないリソースがある場合と、`--format tsv` は、テストで確かめただけです。
 - `init` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、リポジトリの中の一時フォルダに対して実行して得たものです（新しいフォルダ、すでに CSV のあるフォルダ、すでにプロジェクトのあるフォルダ、誤った言語 ID、`--languages` の欠落）。パスは、例に合わせて書き換えています。`--encoding`、`--no-*`、`--json` は、テストで確かめただけです。
 - `run --where` の出力は、2026-11-16 に Windows 11（Node.js 26.5.1）で、サンプルプロジェクトの一時コピー（[plugins/action.md](plugins/action.md) の `mystudio.trim` を置き、前後に空白のある行を `entry add` で 2 つのリソースに足したもの）に対して実行して得たものです。条件に合う行がない場合、`--keys` との併用、誤った式、`--json` も実行しました。`file` 対象のアクションに `--where` を付けた場合は、テストで確かめただけです。
+- `generate` の `--where`、`--batch-size` と、同梱の LLM の生成器（`llm.translate`、`llm.evaluate`）の出力は、2026-11-18 に Windows 11 で、サンプルプロジェクトの一時コピーに、機械翻訳の列と翻訳の評価の列を足し、手元に立てた OpenAI 互換のサーバー（決まった返事を返すもの）を接続先にして実行して得たものです。要求の回数と、まとめた件数は、そのサーバーが受けた要求から数えました。`generate --keys` も同じ構成で実行しました。実際の LLM の API には、接続していません。
+- `run --batch-size` は、テストで確かめただけです（`apps/cli/src/batch.test.ts`。行をまとめて受け取れるアクションを、3 行ずつにまとめて呼ぶこと、まとめて受け取れないアクションでは終了コード 2 になること）。
 - `save` の競合（終了コード 1）と、20 行を超えるアクションのジョブは、実行していません。説明はコードに基づきます。

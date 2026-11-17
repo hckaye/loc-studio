@@ -46,6 +46,10 @@ describe("設定の宣言の形", () => {
     expect(validateSettingDefs([{ key: "a", label: "A", type: "number", options: [{ value: "x" }] }])).toEqual(['settings[0]（"a"） の options は、type が enum のときだけ書けます。']);
     // 既定の値も、種類に合っていること。
     expect(validateSettingDefs([{ key: "a", label: "A", type: "boolean", default: "yes" }])).toEqual(['settings[0]（"a"） の default は使えません: true か false ではありません。']);
+    // multiline（複数行の入力欄）は、文字の項目だけに書ける。
+    expect(validateSettingDefs([{ key: "a", label: "A", type: "string", multiline: true, default: "1 行目\n2 行目" }])).toEqual([]);
+    expect(validateSettingDefs([{ key: "a", label: "A", type: "number", multiline: true }])).toEqual(['settings[0]（"a"） の multiline は、type が string のときだけ書けます。']);
+    expect(validateSettingDefs([{ key: "a", label: "A", type: "string", multiline: "yes" }])).toEqual(['settings[0]（"a"） の multiline は true か false にしてください。']);
     expect(validateSettingDefs([{ key: "a", label: "A", type: "enum", options: [{ value: "x" }], default: "y" }])).toEqual(['settings[0]（"a"） の default は使えません: 選択肢（x）にありません。']);
   });
 });

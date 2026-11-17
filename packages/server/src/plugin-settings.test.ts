@@ -40,6 +40,12 @@ export default (setup) => ({
 });
 `;
 
+/**
+ * プロジェクトのプラグインの設定だけを取り出す。同梱の LLM のプラグインも設定を宣言していて、一覧の先頭に出る
+ * （そちらは llm.test.ts で確かめる）。
+ */
+const own = <T extends { layer: string }>(list: T[]): T[] => list.filter((p) => p.layer !== "builtin");
+
 /** 設定ファイルの場所（プラグインの名前がファイル名になる）。 */
 const settingsFile = (tp: TestProject) => path.join(tp.root, "loc-studio-plugin-settings", "mystudio-width.json");
 const readSettings = async (tp: TestProject) => JSON.parse(await readFile(settingsFile(tp), "utf8")) as unknown;
@@ -64,7 +70,7 @@ afterEach(async () => {
 describe("pluginSettings（一覧）", () => {
   it("設定を宣言したプラグインの項目と、いまの値を返す。設定ファイルがなければ、既定の値で動く", async () => {
     const ws = await tp.open();
-    expect(await ws.pluginSettings()).toEqual([
+    expect(own(await ws.pluginSettings())).toEqual([
       {
         plugin: "mystudio-width",
         version: "1.0.0",
@@ -92,13 +98,13 @@ describe("pluginSettings（一覧）", () => {
     // サンプルのプラグイン（設定の宣言なし）も読み込まれている。
     expect(names).toContain("mystudio-width");
     expect(names.length).toBeGreaterThan(1);
-    expect((await ws.pluginSettings()).map((p) => p.plugin)).toEqual(["mystudio-width"]);
+    expect(own(await ws.pluginSettings()).map((p) => p.plugin)).toEqual(["mystudio-width"]);
   });
 
   it("設定ファイルの、種類の合わない値は使わず、既定の値に倒して警告にする。読めないファイルも同じ", async () => {
     await tp.write("loc-studio-plugin-settings/mystudio-width.json", JSON.stringify({ maxLength: "長め", severity: "fatal", skipEmpty: false }));
     const ws = await tp.open();
-    const [state] = await ws.pluginSettings();
+    const [state] = own(await ws.pluginSettings());
     expect(state!.items.map((i) => [i.key, i.value, i.stored])).toEqual([
       ["maxLength", 5, false],
       ["severity", "warning", false],
@@ -116,7 +122,7 @@ describe("pluginSettings（一覧）", () => {
 
     await tp.write("loc-studio-plugin-settings/mystudio-width.json", "{ こわれた");
     const ws2 = await tp.open();
-    const [broken] = await ws2.pluginSettings();
+    const [broken] = own(await ws2.pluginSettings());
     expect(broken!.problems).toHaveLength(1);
     expect(broken!.problems[0]).toContain(`プラグイン "mystudio-width" の設定ファイル ${settingsFile(tp)} はJSON として読めませんでした`);
     expect(broken!.problems[0]).toContain("既定の値で動かします");
@@ -130,7 +136,7 @@ describe("setPluginSettings（保存）", () => {
     const saved = await ws.setPluginSettings({ plugin: "mystudio-width", values: { maxLength: 9, severity: "error", note: "LQA 用" } });
     expect(await readSettings(tp)).toEqual({ maxLength: 9, severity: "error", note: "LQA 用" });
     expect((await readFile(settingsFile(tp), "utf8")).endsWith("}\n")).toBe(true);
-    expect(saved[0]!.items.map((i) => [i.key, i.value, i.stored])).toEqual([
+    expect(own(saved)[0]!.items.map((i) => [i.key, i.value, i.stored])).toEqual([
       ["maxLength", 9, true],
       ["severity", "error", true],
       ["skipEmpty", true, false],
@@ -149,7 +155,7 @@ describe("setPluginSettings（保存）", () => {
     expect(await widthIssues(ws)).toEqual([{ message: "10 文字（上限 5）", severity: "error" }]);
     const cleared = await ws.setPluginSettings({ plugin: "mystudio-width", values: { severity: null, note: null } });
     expect(existsSync(settingsFile(tp))).toBe(false);
-    expect(cleared[0]!.items.every((i) => !i.stored)).toBe(true);
+    expect(own(cleared)[0]!.items.every((i) => !i.stored)).toBe(true);
 
     // 開き直しても、保存した値で動く。
     await ws.setPluginSettings({ plugin: "mystudio-width", values: { maxLength: 7 } });
@@ -187,7 +193,7 @@ describe("setPluginSettings（保存）", () => {
     const ws2 = await tp.open();
     const saved = await ws2.setPluginSettings({ plugin: "mystudio-width", values: { maxLength: 4 } });
     expect(await readSettings(tp)).toEqual({ maxLength: 4 });
-    expect(saved[0]!.problems).toEqual([]);
+    expect(own(saved)[0]!.problems).toEqual([]);
   });
 });
 
@@ -205,7 +211,7 @@ describe("入口の関数と setup.settings", () => {
     const errors = (await ws.plugins()).errors.filter((e) => e.path.endsWith("eager.mjs"));
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain("プラグインの設定（settings.get）は、プラグインの読み込みが終わってから使えます");
-    expect((await ws.pluginSettings()).map((p) => p.plugin)).toEqual(["mystudio-width"]);
+    expect(own(await ws.pluginSettings()).map((p) => p.plugin)).toEqual(["mystudio-width"]);
   });
 
   it("宣言の形が誤っているプラグインは、読み込まない（理由を読み込みエラーに出す）", async () => {
@@ -253,17 +259,20 @@ describe("Web モードの権限", () => {
   it("読むのは全員、保存は manage の権限がある役割だけ。管理者でない人には、設定ファイルの場所を返さない", async () => {
     const ws = await tp.open();
     const viewer = await dispatch(ws, "pluginSettings", {}, as("v", "viewer"));
-    expect("result" in viewer && (viewer.result as { plugin: string; file: string }[]).map((p) => [p.plugin, p.file])).toEqual([["mystudio-width", ""]]);
+    expect("result" in viewer && (viewer.result as { plugin: string; file: string }[]).map((p) => [p.plugin, p.file])).toEqual([
+      ["@loc-studio/plugin-llm", ""],
+      ["mystudio-width", ""],
+    ]);
     const denied = await dispatch(ws, "setPluginSettings", { plugin: "mystudio-width", values: { maxLength: 9 } }, as("t", "translator"));
     expect(denied).toMatchObject({ error: { code: "forbidden" } });
     expect(existsSync(settingsFile(tp))).toBe(false);
 
     const saved = await dispatch(ws, "setPluginSettings", { plugin: "mystudio-width", values: { maxLength: 9 } }, as("m", "manager"));
-    expect("result" in saved && (saved.result as { file: string; items: { key: string; value?: unknown }[] }[])[0]).toMatchObject({ file: "", items: expect.arrayContaining([expect.objectContaining({ key: "maxLength", value: 9 })]) as unknown });
+    expect("result" in saved && (saved.result as { plugin: string; file: string; items: { key: string; value?: unknown }[] }[]).find((p) => p.plugin === "mystudio-width")).toMatchObject({ file: "", items: expect.arrayContaining([expect.objectContaining({ key: "maxLength", value: 9 })]) as unknown });
     expect(await readSettings(tp)).toEqual({ maxLength: 9 });
     // サーバーの管理者には、場所も返す。
     const admin = await dispatch(ws, "pluginSettings", {}, as("a", "manager", true));
-    expect("result" in admin && (admin.result as { file: string }[])[0]!.file).toBe(settingsFile(tp));
+    expect("result" in admin && (admin.result as { plugin: string; file: string }[]).find((p) => p.plugin === "mystudio-width")!.file).toBe(settingsFile(tp));
   });
 });
 

@@ -13,6 +13,7 @@ import type {
   ParsedDocument,
   Plugin,
   PluginHost,
+  PluginSetupContext,
   ProjectConfig,
   ResourceRef,
   RoleDef,
@@ -33,14 +34,20 @@ import { resolveRoles } from "./roles.js";
 import { createMemoryDb } from "./memory-db.js";
 import { defaultPluginDirs, loadPluginDirs } from "./plugin-loader.js";
 import type { PluginCandidate } from "./plugin-loader.js";
-import { loadPluginSettings } from "./plugin-settings.js";
+import { createSettingsReader, loadPluginSettings } from "./plugin-settings.js";
 import type { PluginSettingsState } from "./plugin-settings.js";
 import { EXTENSION_FIELDS, EXTENSION_KINDS, PluginRegistry } from "./registry.js";
 import type { ExtensionKind, PluginDirSpec, PluginLoadError, ResolvedValidator } from "./types.js";
 
+/**
+ * 同梱のプラグイン。関数なら、設定の値を読む窓口を渡して呼ぶ（プラグインのファイルの入口が関数のときと同じ）。
+ * プロジェクトを開く（読み直す）たびに呼ぶので、関数は、呼ぶたびに新しいプラグインを返すこと。
+ */
+export type BuiltinPlugin = Plugin | ((setup: PluginSetupContext) => Plugin);
+
 export interface OpenProjectOptions {
   /** 最初に登録する同梱のプラグイン（層は "builtin"）。 */
-  builtins?: Plugin[];
+  builtins?: BuiltinPlugin[];
   /** 配布したアプリのフォルダ。その中の plugins を読む。 */
   appDir?: string;
   /** 個人の設定フォルダ。その中の plugins を読む（層は "local"）。 */
@@ -226,7 +233,18 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
   });
   const config = loaded.config;
   const registry = new PluginRegistry();
-  for (const plugin of opts.builtins ?? []) registry.register(plugin, { layer: "builtin" });
+  // プラグインの設定の値は、プラグインを読み込んだあとで読む（宣言を見てから）。入口の関数に渡す窓口は、読んだ値をあとから引く。
+  const settingsHolder: { states?: PluginSettingsState[] } = {};
+  const settingsValues = (name: string) => settingsHolder.states?.find((s) => s.plugin === name)?.values;
+  for (const builtin of opts.builtins ?? []) {
+    if (typeof builtin !== "function") {
+      registry.register(builtin, { layer: "builtin" });
+      continue;
+    }
+    const made: { plugin?: Plugin } = {};
+    made.plugin = builtin({ settings: createSettingsReader(() => (made.plugin ? [made.plugin] : undefined), settingsValues) });
+    registry.register(made.plugin, { layer: "builtin" });
+  }
 
   const pluginDirs = defaultPluginDirs({
     projectRoot: root,
@@ -237,12 +255,10 @@ async function buildState(root: string, opts: OpenProjectOptions): Promise<Proje
   });
   const dirWarnings: string[] = [];
   const allowedDirs = opts.pluginDirRoots ? await filterPluginDirs(pluginDirs, opts.pluginDirRoots, dirWarnings) : pluginDirs;
-  // プラグインの設定の値は、プラグインを読み込んだあとで読む（宣言を見てから）。入口の関数に渡す窓口は、読んだ値をあとから引く。
-  const settingsHolder: { states?: PluginSettingsState[] } = {};
   const { plugins, errors, untrusted } = await loadPluginDirs(allowedDirs, {
     ...(opts.sdkPath ? { sdkPath: opts.sdkPath } : {}),
     ...(opts.trust ? { trust: opts.trust } : {}),
-    settingsValues: (name) => settingsHolder.states?.find((s) => s.plugin === name)?.values,
+    settingsValues,
   });
   const deny = localDenyKinds(config);
   for (const { plugin, origin } of plugins) {

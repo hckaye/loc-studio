@@ -1,7 +1,7 @@
 "use client";
 import { memo, useEffect, useRef, useState } from "react";
 import type { ActionInfo, CellInfo, ProjectInfo, RowInfo } from "@loc-studio/server";
-import { EnumSelect } from "@/components/EnumSelect";
+import { Chip, EnumSelect } from "@/components/EnumSelect";
 import { canEditCell, canGenerate, canRunAction, optionProblem } from "@/lib/client/permissions";
 import { DisplayValue } from "./display";
 import { RenderedCell } from "./renderers";
@@ -9,6 +9,7 @@ import {
   displayValue,
   enumDefault,
   enumOptions,
+  findOption,
   SEVERITY_LABEL,
   textValue,
   worstSeverity,
@@ -266,18 +267,37 @@ const CellBody = memo(function CellBody({ info, row, gc, editing, handlers, acti
     case "generated": {
       const run = canGenerate(info, gc.col.id);
       const state = cell?.generated ?? (cell?.value ? "fresh" : "missing");
-      const label = state === "fresh" ? "最新" : state === "stale" ? "古い" : "未生成";
+      const label = state === "fresh" ? "最新" : state === "stale" ? "変更あり" : "未生成";
+      const title =
+        state === "fresh"
+          ? "生成結果: 最新（いまの本文から生成した結果です）"
+          : state === "stale"
+            ? "生成結果: 変更あり（生成のあとで、元の本文や設定が変わりました。生成し直すと、最新になります）"
+            : "生成結果: 未生成";
+      // 選択式の生成列（判定など）は、選択肢の色と表示名で出す。
+      const option = findOption(gc.col, cell?.value);
+      // 生成器が値に添えた説明（判定の理由など）。
+      const note = typeof cell?.comment === "string" && cell.comment !== "" ? cell.comment : undefined;
       return (
         <>
           {gc.col.renderer || gc.col.display ? (
             <span className="cell-grow">
               <ValueView info={info} row={row} gc={gc} handlers={handlers} {...(resourceId ? { resourceId } : {})} />
             </span>
+          ) : option ? (
+            <span className={`gen-${state}`}>
+              <Chip option={option} />
+            </span>
           ) : (
             <span className={`cell-text gen-${state}`}>{displayValue(cell?.value)}</span>
           )}
+          {note !== undefined && (
+            <span className="review-note" title={note}>
+              <span className="review-note-text">{note}</span>
+            </span>
+          )}
           <span className="gen-tools">
-            <span className={`gen-badge gen-badge-${state}`} title={`生成結果: ${label}`}>
+            <span className={`gen-badge gen-badge-${state}`} title={title}>
               {label}
             </span>
             <button

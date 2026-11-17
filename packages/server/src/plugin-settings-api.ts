@@ -24,6 +24,7 @@ function toInfo(state: PluginSettingsState): PluginSettingsInfo {
       const item: PluginSettingsInfo["items"][number] = { key: def.key, label: def.label, type: def.type, stored: Object.hasOwn(state.stored, def.key) };
       if (def.description !== undefined) item.description = def.description;
       if (def.options) item.options = def.options.map((o) => ({ value: o.value, ...(o.label !== undefined ? { label: o.label } : {}) }));
+      if (def.multiline === true) item.multiline = true;
       if (def.default !== undefined) item.default = def.default;
       const value = state.values[def.key];
       if (value !== undefined) item.value = value;

@@ -468,9 +468,10 @@ export function EditModal(props: EditModalProps) {
               <div className="ref-block" key={c.id}>
                 <div className="ref-label">
                   {columnLabel(c)}{" "}
-                  {c.kind === "generated" && <span className={`gen-badge gen-badge-${state}`}>{state === "fresh" ? "最新" : state === "stale" ? "古い" : "未生成"}</span>}
+                  {c.kind === "generated" && <span className={`gen-badge gen-badge-${state}`}>{state === "fresh" ? "最新" : state === "stale" ? "変更あり" : "未生成"}</span>}
                 </div>
                 <div className="ref-text">{option ? <Chip option={option} /> : displayValue(cell?.value) || <span className="muted">（なし）</span>}</div>
+                {c.kind === "generated" && typeof cell?.comment === "string" && cell.comment !== "" && <div className="ref-text muted small">{cell.comment}</div>}
               </div>
             );
           })}

@@ -23,6 +23,8 @@ export interface GeneratedCellRecord {
 /** 生成結果（kv("core.generated") の値）。 */
 export interface GeneratedValue {
   value: string;
+  /** 生成器が値に添えた説明（判定の理由など）。 */
+  comment?: string;
   meta?: Record<string, unknown>;
   generatorId: string;
   at: string;
@@ -146,6 +148,7 @@ function reviewTargetSpec(ctx: WsContext, column: ColumnDef, languages: (Languag
 
 interface GenState {
   value?: unknown;
+  comment?: string;
   state?: "fresh" | "stale" | "missing";
 }
 
@@ -207,16 +210,21 @@ async function loadGenerated(
     if (rec) kvKeys.add(rec.key);
   }
   const cached = kvKeys.size > 0 ? await ctx.shared.kv(GENERATED_NS).getMany([...kvKeys]) : {};
-  const valueAt = (key: string): unknown => (cached[key] as GeneratedValue | undefined)?.value;
+  const at = (key: string, state: "fresh" | "stale"): GenState => {
+    const hit = cached[key] as GeneratedValue | undefined;
+    const g: GenState = { value: hit?.value, state };
+    if (typeof hit?.comment === "string" && hit.comment !== "") g.comment = hit.comment;
+    return g;
+  };
   for (const c of cells) {
     const rec = recordOf.get(c.k);
     if (c.key === undefined) {
       // 生成しないセル（入力がない）。前に生成した結果があれば古いものとして見せる。
-      if (rec && rec.key in cached) out.set(c.k, { value: valueAt(rec.key), state: "stale" });
+      if (rec && rec.key in cached) out.set(c.k, at(rec.key, "stale"));
       continue;
     }
-    if (c.key in cached) out.set(c.k, { value: valueAt(c.key), state: "fresh" });
-    else if (rec && rec.key in cached) out.set(c.k, { value: valueAt(rec.key), state: "stale" });
+    if (c.key in cached) out.set(c.k, at(c.key, "fresh"));
+    else if (rec && rec.key in cached) out.set(c.k, at(rec.key, "stale"));
     else out.set(c.k, { state: "missing" });
   }
   return out;
@@ -345,6 +353,7 @@ export async function buildCells(
         } else if (column.kind === "generated") {
           const g = generated.get(column.id)?.get(k);
           cell = { value: g?.value };
+          if (g?.comment !== undefined) cell.comment = g.comment;
           if (g?.state) {
             cell.generated = g.state;
             if (g.state === "stale") cell.stale = true;

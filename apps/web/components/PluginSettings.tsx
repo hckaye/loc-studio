@@ -107,6 +107,26 @@ function PluginForm({ plugin, locked, lockedReason, onSaved }: { plugin: PluginS
                       </option>
                     ))}
                   </select>
+                ) : item.multiline ? (
+                  <>
+                    <textarea
+                      id={id(item.key)}
+                      className="input"
+                      rows={6}
+                      value={String(draft)}
+                      placeholder={item.default !== undefined ? String(item.default) : ""}
+                      disabled={locked || busy}
+                      title={lockedReason}
+                      onChange={(e) => set(e.target.value)}
+                    />
+                    {item.default !== undefined && (
+                      <div className="row">
+                        <button type="button" className="btn small" disabled={locked || busy || draft === String(item.default)} title={lockedReason ?? "既定の文章を入力欄に入れます。そこから書き換えられます。"} onClick={() => set(String(item.default))}>
+                          既定の文章を入力欄に入れる
+                        </button>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <input
                     id={id(item.key)}
@@ -124,11 +144,18 @@ function PluginForm({ plugin, locked, lockedReason, onSaved }: { plugin: PluginS
             )}
             <p className="muted small">
               {item.description && <>{item.description} </>}
+              {/* 複数行の項目は、既定の値が長いので、たたんで出す。 */}
               <span>
-                {defaultNote}
+                {item.multiline && item.default !== undefined ? "既定の値は、下で見られます" : defaultNote}
                 {item.type !== "boolean" && !item.stored && "（いまは既定の値で動いています）"}
               </span>
             </p>
+            {item.multiline && item.default !== undefined && (
+              <details className="muted small">
+                <summary>既定の値を見る</summary>
+                <pre>{String(item.default)}</pre>
+              </details>
+            )}
           </div>
         );
       })}

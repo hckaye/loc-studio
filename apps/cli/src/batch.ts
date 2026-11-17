@@ -131,16 +131,33 @@ async function waitWithProgress(ws: Workspace, jobId: string, io: CliIO, prefix:
 
 async function cmdGenerate(ws: Workspace, opts: CliOptions, io: CliIO): Promise<number> {
   const columnId = opts.args[0] as string;
-  checkLanguages(await ws.info(), opts.languages);
-  const lang = opts.languages ? { languages: opts.languages } : {};
+  const info = await ws.info();
+  checkLanguages(info, opts.languages);
+  if (opts.where !== undefined && opts.keys) throw new UsageError("--where と --keys は、どちらか一方だけを指定してください。");
+  const lang = {
+    ...(opts.languages ? { languages: opts.languages } : {}),
+    // --where: 条件に合う行だけを生成する（条件の「対象の言語」は --languages。省略時はすべての言語）。行を選ぶのはサービス層。
+    ...(opts.where !== undefined ? { filter: { where: opts.where, languages: opts.languages ?? info.languages.map((l) => l.id) } } : {}),
+    ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
+  };
 
   // --resources 指定時は 1 リソースにつき 1 ジョブ、なければプロジェクト全体で 1 ジョブ。
-  type Scope = { scope: "project" } | { scope: "resource"; resourceId: string };
+  // --keys 指定時は、そのキーの行があるリソースごとに 1 ジョブ。
+  type Scope = { scope: "project" } | { scope: "resource"; resourceId: string } | { scope: "selection"; resourceId: string; keys: string[] };
   let scopes: Scope[] = [{ scope: "project" }];
-  if (opts.resources !== undefined) {
+  if (opts.resources !== undefined || opts.keys) {
     const found = await selectResources(ws, opts.resources);
     if (found.length === 0) throw new ApiError("not-found", `--resources "${opts.resources}" に一致するリソースがありません。`);
     scopes = found.map((r) => ({ scope: "resource", resourceId: r.id }));
+    if (opts.keys) {
+      scopes = [];
+      for (const r of found) {
+        const existing = new Set(await allKeys(ws, r.id));
+        const keys = opts.keys.filter((k) => existing.has(k));
+        if (keys.length > 0) scopes.push({ scope: "selection", resourceId: r.id, keys });
+      }
+      if (scopes.length === 0) throw new ApiError("not-found", `--keys ${opts.keys.join(",")} の行が、対象のリソースにありません。`);
+    }
   }
 
   const totals = { total: 0, cached: 0, toRun: 0 };
@@ -162,7 +179,7 @@ async function cmdGenerate(ws: Workspace, opts: CliOptions, io: CliIO): Promise<
   let failed = 0;
   const errors: string[] = [];
   for (const [i, s] of scopes.entries()) {
-    const label = s.scope === "resource" ? s.resourceId : "プロジェクト全体";
+    const label = s.scope === "project" ? "プロジェクト全体" : s.resourceId;
     const r = await startWithRetry(io, label, () => ws.generate({ columnId, ...s, ...lang }));
     totals.total += r.total;
     totals.cached += r.cached;
@@ -212,6 +229,13 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
     );
   }
   if (action.target === "review") throw new ApiError("invalid", `アクション "${actionId}" はレビュー先です。run では使えません。`);
+  if (opts.batchSize !== undefined && opts.batchSize > 1 && !action.batch) {
+    throw new UsageError(
+      action.target === "cell" || action.target === "row"
+        ? `アクション "${actionId}" は、複数の行をまとめて受け取れないので、--batch-size は使えません（1 行ずつ実行します）。`
+        : `アクション "${actionId}"（target: ${action.target}）は、対象の行をまとめて 1 回で受け取るので、--batch-size は使えません。`,
+    );
+  }
   if (opts.where !== undefined) {
     if (opts.keys) throw new UsageError("--where と --keys は、どちらか一方だけを指定してください。");
     if (action.target === "file" || action.target === "column") {
@@ -283,6 +307,7 @@ async function cmdRun(ws: Workspace, opts: CliOptions, io: CliIO): Promise<numbe
               ...(filter ? { filter } : {}),
               ...(cellId !== undefined ? { cellId } : {}),
               ...(language !== undefined ? { language } : {}),
+              ...(opts.batchSize !== undefined && opts.batchSize > 1 ? { batchSize: opts.batchSize } : {}),
             }),
           );
           // 条件に合う行のないリソースは、結果に出さない。

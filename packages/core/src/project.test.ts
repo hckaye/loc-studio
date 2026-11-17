@@ -238,6 +238,43 @@ describe("openProject", () => {
     expect(project.tokenizer()("{a}<b>").map((t) => t.kind)).toEqual(["variable", "tag"]);
   });
 
+  it("同梱のプラグインは関数でも渡せる。関数は、設定の値を読む窓口を受け取り、設定ファイルの値を読める", async () => {
+    await putConfig({});
+    await put(path.join(root, "loc-studio-plugin-settings", "bundled.json"), JSON.stringify({ limit: 7 }));
+    const read: { get?: () => unknown } = {};
+    let made = 0;
+    const project = await openProject(root, {
+      builtins: [
+        builtin,
+        (setup) => {
+          made++;
+          read.get = () => [setup.settings.get("limit"), setup.settings.get("mode")];
+          return {
+            name: "bundled",
+            settings: [
+              { key: "limit", label: "上限", type: "number", default: 3 },
+              { key: "mode", label: "やり方", type: "string", default: "既定" },
+            ],
+          };
+        },
+      ],
+      env: {},
+      sdkPath,
+    });
+    expect(project.registry.plugins().map((p) => [p.plugin.name, p.origin.layer])).toEqual([
+      ["fake-builtin", "builtin"],
+      ["bundled", "builtin"],
+    ]);
+    // 設定ファイルの値と、値のない項目の既定の値。
+    expect(read.get!()).toEqual([7, "既定"]);
+    expect(project.pluginSettings.map((s) => [s.plugin, s.layer, s.values])).toEqual([["bundled", "builtin", { limit: 7, mode: "既定" }]]);
+    // 読み直すと、関数をもう一度呼び、新しい値を読む。
+    await put(path.join(root, "loc-studio-plugin-settings", "bundled.json"), JSON.stringify({ limit: 9, mode: "厳しめ" }));
+    await project.reload();
+    expect(made).toBe(2);
+    expect(read.get!()).toEqual([9, "厳しめ"]);
+  });
+
   it("tree の既定は builtin.globTree、未登録なら tree() が分かるエラー", async () => {
     await putConfig({});
     const project = await openProject(root, { builtins: [], env: {}, sdkPath });

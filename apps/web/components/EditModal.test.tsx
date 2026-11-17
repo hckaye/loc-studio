@@ -328,7 +328,7 @@ describe("編集モーダル: 参照欄", () => {
     await open(0, "en", withRow({ "text@zh": { value: "中文 0" } }), { languages, editor: { referenceLanguages: ["zh", "en", "ja"], count: { unit: "codepoints", skipTokens: false } } });
     await waitFor(() => expect(refs().getByText("中文 0")).toBeTruthy());
     expect(refs().getByText("日本語0")).toBeTruthy();
-    expect([...screen.getByRole("region", { name: "参照" }).querySelectorAll(".ref-label")].map((e) => e.textContent!.trim())).toEqual(["日本語 （基になる言語）", "中国語", "逆翻訳 古い"]);
+    expect([...screen.getByRole("region", { name: "参照" }).querySelectorAll(".ref-label")].map((e) => e.textContent!.trim())).toEqual(["日本語 （基になる言語）", "中国語", "逆翻訳 変更あり"]);
   });
 
   it("設定の referenceColumns の列を、書いた順に出す（行に 1 つの列も、この言語の列も）。空なら生成列も出さない", async () => {

@@ -20,6 +20,7 @@ function actionInfo(a: Action): ActionInfo {
   if (a.icon !== undefined) info.icon = a.icon;
   if (a.columns !== undefined) info.columns = a.columns;
   if (a.languages !== undefined) info.languages = a.languages;
+  if ((a.target === "cell" || a.target === "row") && typeof a.runBatch === "function") info.batch = true;
   return info;
 }
 

@@ -22,6 +22,8 @@ const AVAILABLE_COLUMNS = [
   { id: "builtin.textStatus", kind: "meta", label: "テキスト", scope: "language" },
   { id: "builtin.reviewStatus", kind: "review", label: "レビュー", scope: "language" },
   { id: "builtin.length", kind: "computed", label: "文字数", scope: "language" },
+  { id: "llm.translation", kind: "generated", label: "機械翻訳", scope: "language" },
+  { id: "llm.evaluation", kind: "generated", label: "翻訳の評価", scope: "language" },
 ];
 const AVAILABLE_VALIDATORS = [
   { id: "builtin.placeholders", label: "変数・タグの過不足" },
@@ -136,7 +138,7 @@ describe("plugins / reloadPlugins / reloadResource", () => {
     const line = p.plugins.find((x) => x.name === "mystudio-line-width")!;
     expect(line).toMatchObject({ layer: "project", version: "1.0.0" });
     expect(line.provides.validator).toEqual(["mystudio.lineWidth"]);
-    expect(p.plugins.find((x) => x.name === "@loc-studio/plugin-llm")!.provides.generator).toEqual(["llm.translate"]);
+    expect(p.plugins.find((x) => x.name === "@loc-studio/plugin-llm")!.provides.generator).toEqual(["llm.translate", "llm.evaluate"]);
     expect(p.dirs.find((d) => d.layer === "project")).toMatchObject({ dir: path.join(tp.root, "loc-studio-plugins"), exists: true });
     expect(p.dirs.find((d) => d.layer === "local")).toMatchObject({ exists: false });
     expect(p.errors).toEqual([]);
