@@ -234,3 +234,4 @@ export default definePlugin({
 - `packages/builtin/src/db-source.ts`: 同梱の `builtin.db`。`options.namespace` で置き場所を分ける
 - `packages/builtin/src/review-source.ts`: 同梱の `builtin.reviews`。リンクの追記（`addReviewLinks`）も実装している
 - `examples/remote-project/loc-studio-plugins/tracker-status.ts`: 外部の API を使う完全な例
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

@@ -135,3 +135,4 @@ node apps/cli/dist/index.js plugins --project <プロジェクト>
 ## 参考になる実装
 
 - `packages/builtin/src/default-columns.ts`: 同梱の列（`builtin.key`、`builtin.text`、`builtin.textStatus`、`builtin.reviewStatus`、計算列の `builtin.length`）
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

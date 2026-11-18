@@ -144,3 +144,4 @@ reverse: 全体 6 / キャッシュ済み 0 / 生成 6 / 失敗 0
 ## 参考になる実装
 
 - `packages/plugin-llm`: 同梱の `llm.translate`（機械翻訳）と `llm.evaluate`（翻訳の評価）。OpenAI 互換の API を呼び、`cacheParams` にモデルやプロンプトを入れる。複数の入力を 1 回の要求にまとめる書き方、値に説明（`comment`）を添える書き方、プラグインの設定（プロンプト）を読む書き方の例になる
+- 同梱の LLM のプラグインが守っている決まりと、処理の流れの説明: [bundled-plugins/llm/design.md](../bundled-plugins/llm/design.md)、[bundled-plugins/llm/implementation.md](../bundled-plugins/llm/implementation.md)

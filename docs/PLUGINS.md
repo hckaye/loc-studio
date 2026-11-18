@@ -25,6 +25,7 @@
 | [plugins/settings.md](plugins/settings.md) | プラグインの設定（項目の宣言、プラグインごとの設定ファイル、設定の画面での編集） |
 | [plugins/loading.md](plugins/loading.md) | 読み込みの決まり（プラグインフォルダと層、`plugin.json`、TypeScript、SDK の import） |
 | [plugins/trust.md](plugins/trust.md) | 画面での信頼の確認、import の条件、個人のプラグインの制限 |
+| [bundled-plugins/](bundled-plugins/README.md) | 同梱のプラグイン（`@loc-studio/builtin`、`@loc-studio/plugin-llm`）の使い方、設定項目、設計、実装。同じ種類のプラグインを書くときの、実装の例としても読める |
 
 ## 拡張ポイントの種類
 
@@ -277,7 +278,7 @@ node apps/cli/dist/index.js plugins --project <プロジェクト>
 | 読み込みエラー「信頼の確認の条件を満たさないため読み込みません: ...」（画面だけ） | import の書き方が、信頼の確認の条件に合わない | エラーにある行を、[trust.md](plugins/trust.md) の条件に合わせて直す |
 | ファイルを書き換えたのに、画面に反映されない | 画面は、開いたときに読み込んだプラグインを使い続ける | 「プラグイン」のダイアログの「プラグインを再読み込み」を押す（Web モードでは manager だけが使えます）。コマンドラインは毎回読み込み直します |
 
-CLI の `plugins` の「警告」に出るのは、`tree`、`formats`、`syntaxes`、`validators`、`sources`、`columns` の `use`、列の `source` と `renderer` の誤りです。`actions`、`review.targets`、生成列の `generator` の誤りは、`plugins` には出ません。CLI では `run` や `generate` を実行したときにエラーになり、画面では「警告とエラー」に「設定の actions にあるアクション "x" は登録されていません。」のように出ます。
+CLI の `plugins` の「警告」に出るのは、`tree`、`formats`、`syntaxes`、`validators`、`hooks`、`sources`、`columns` の `use`、列の `source` と `renderer` の誤りです。`actions`、`review.targets`、生成列の `generator` の誤りは、`plugins` には出ません。CLI では `run` や `generate` を実行したときにエラーになり、画面では「警告とエラー」に「設定の actions にあるアクション "x" は登録されていません。」のように出ます。
 
 壊れたプラグインがあっても、ほかのプラグインは読み込まれます。実行時の失敗は、次のように出ます。
 

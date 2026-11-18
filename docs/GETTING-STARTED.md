@@ -443,7 +443,8 @@ LOC_STUDIO_PROJECT=$PWD/my-game npm run dev:web
 
 ## 6. 次に読むもの
 
-- [CONFIG.md](CONFIG.md): 設定のキーの一覧
+- [CONFIG.md](CONFIG.md): 設定のキーの一覧と、すべてのキーを書いた例
+- [bundled-plugins/](bundled-plugins/README.md): 同梱のプラグイン（CSV / TSV、検証、ステータスとレビューの列、LLM での機械翻訳と評価）の使い方と設定項目
 - [PLUGINS.md](PLUGINS.md): スタジオ固有の検証、形式、連携をプラグインで書く
 - [CLI.md](CLI.md): CI などからの利用
 

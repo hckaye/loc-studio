@@ -166,3 +166,4 @@ node apps/cli/dist/index.js save --project <プロジェクト>
 
 - `packages/builtin/src/csv.ts`: 同梱の CSV / TSV。`set` / `add` / `remove` / `rename` のすべてと、見出しにない列の追加（`addColumns`）に対応する
 - `examples/remote-project/loc-studio-plugins/remote-json.ts`: API の JSON 文書を扱うフォーマット。リソースの ID に拡張子がないので、`match(resource, head)` で先頭のバイトを調べる
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

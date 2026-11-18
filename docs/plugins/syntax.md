@@ -96,3 +96,4 @@ node apps/cli/dist/index.js validate --project <プロジェクト> --resources 
 ## 参考になる実装
 
 - `packages/builtin/src/syntax.ts`: 同梱の `builtin.braces`（`{name}`）、`builtin.printf`（`%s`）、`builtin.tags`（`<b>`）
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

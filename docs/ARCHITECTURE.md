@@ -27,6 +27,8 @@ loc-studio はゲーム向けのローカライゼーションテキスト管理
 
 依存の向きは次のとおりです。core、builtin、plugin-llm は sdk に依存します。store は sdk と core に依存します。server は、これらをまとめて使います。web と cli は server を使います。desktop は、web のビルドを起動するだけで、ほかのパッケージには依存しません。core は builtin と store に依存しません。
 
+同梱の 2 つのプラグイン（`packages/builtin`、`packages/plugin-llm`）の設計と実装は、プラグインごとの文書（[bundled-plugins/](bundled-plugins/README.md)）にあります。
+
 ## 3. データの流れ
 
 ツリーは `TreeProvider.list` が返すリソースの階層です。リソースの読み書きも `TreeProvider.read` / `write` で行います。

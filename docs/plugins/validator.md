@@ -188,3 +188,4 @@ node apps/cli/dist/index.js validate --project <プロジェクト> --resources 
 - `examples/sample-project/loc-studio-plugins/line-width.ts`: `options` を使い、行ごとの `range` を返す
 - `examples/sample-project/loc-studio-plugins/studio-pack/index.mjs`: 素の JavaScript で書いたフォルダ形式のプラグイン
 - `packages/builtin/src/validators.ts`: 同梱のバリデータ。`tokens` と `base` を使う `builtin.placeholders` など
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

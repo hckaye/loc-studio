@@ -108,6 +108,7 @@ npm run check:desktop
 - 同じ日に、公開済みの 0.2.0 の zip を展開して同じ確認にかけ、プロジェクトを渡して起動する最初の確認で、内部サーバーが `Cannot find package 'acorn'` で失敗することを確かめました（上の「配布物の作成」）。
 - 2026-11-17 に Windows 11（x64）で、0.4.0 の配布物（`loc-studio Setup 0.4.0.exe`、`loc-studio-0.4.0-win.zip`）を `npm run build:web` と `npm run dist:desktop` で作り、`npm run check:desktop`（42 項目）がすべて通りました。インストーラーの実行は、この版でも確かめていません。
 - 2026-11-18 に Windows 11（x64）で、0.5.0 の配布物（`loc-studio Setup 0.5.0.exe`、`loc-studio-0.5.0-win.zip`）を `npm run build:web` と `npm run dist:desktop` で作り、`npm run check:desktop`（42 項目）がすべて通りました。この版で足した LLM のプラグイン（翻訳の評価、プロンプトの設定）と、一括アクションからの生成は、配布物では操作していません（本番ビルドのサーバーに対する `npm run check:browser` で確かめています）。インストーラーの実行は、この版でも確かめていません。
+- 同じ日に、0.5.1 の配布物（`loc-studio Setup 0.5.1.exe`、`loc-studio-0.5.1-win.zip`）を `npm run build:web` と `npm run dist:desktop` で作り、`npm run check:desktop`（42 項目）がすべて通りました。0.5.1 は文書を足した版で、プログラムのコードは 0.5.0 と同じです。インストーラーの実行は、この版でも確かめていません。
 
 コードを読んで確認しただけのことは次のとおりです。
 

@@ -204,3 +204,4 @@ RemoteExample/
 
 - `packages/builtin/src/glob-tree.ts`: 同梱の `builtin.globTree`。一時ファイルを作ってから置き換える書き込みと、更新時刻とサイズによる版
 - `examples/remote-project/loc-studio-plugins/remote-tree.ts`: 外部の API を使う完全な例
+- 同梱の実装が守っている決まりと、処理の流れの説明: [bundled-plugins/builtin/design.md](../bundled-plugins/builtin/design.md)、[bundled-plugins/builtin/implementation.md](../bundled-plugins/builtin/implementation.md)

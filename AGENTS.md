@@ -1,6 +1,6 @@
 # AGENTS.md
 
-このリポジトリで作業する AI エージェント（と人）向けの決まりです。設計の要約は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、プラグインの書き方は [docs/PLUGINS.md](docs/PLUGINS.md) にあります。ここには、変更のたびに守ることだけを書きます。
+このリポジトリで作業する AI エージェント（と人）向けの決まりです。設計の要約は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、プラグインの書き方は [docs/PLUGINS.md](docs/PLUGINS.md)、同梱のプラグインの説明は [docs/bundled-plugins/](docs/bundled-plugins/README.md) にあります（[プラグインを書く・直すときに読む文書](#プラグインを書く直すときに読む文書)）。ここには、変更のたびに守ることだけを書きます。
 
 ## コマンド
 
@@ -18,6 +18,24 @@
 Postgres を使うテストは、環境変数 `LOC_STUDIO_TEST_PG_URL` に接続先を入れると走ります（なければ飛ばします）。Docker があれば、`docker run -d --rm -e POSTGRES_PASSWORD=<パスワード> -p 127.0.0.1::5432 postgres:16-alpine` で使い捨てのサーバーを用意できます。自分で起動したコンテナは、終わったら自分で止めます。
 
 変更を終える前に、`npm run typecheck` と `npm test` の両方を通します。画面を変えたら、`npm run check:browser` も通します。デスクトップ版（`apps/desktop`）や、サーバーに入るパッケージの構成を変えたら、配布物を作り直して `npm run check:desktop` も通します。テストのファイルも型を確かめる対象です（`tsconfig.test.json`）。以前はテストが型の確認から外れていて、引数の足りない呼び出しが残ったまま通っていました。
+
+## プラグインを書く・直すときに読む文書
+
+プラグインの書き方と、同梱のプラグインの中身には、文書があります。コードを読み始める前に、当てはまる文書を読みます。型の定義（`packages/sdk/src/types.ts`）が正で、文書と食い違うときは型に従います。
+
+| すること | 読む文書 |
+| --- | --- |
+| プラグインを新しく書く（種類の選び方、置いてから確かめるまでの手順、守る決まり、うまく動かないときの直し方） | [docs/PLUGINS.md](docs/PLUGINS.md) |
+| 種類ごとの interface と、動かして確かめた例を見る | `docs/plugins/` の、種類ごとのページ（[validator](docs/plugins/validator.md)、[syntax](docs/plugins/syntax.md)、[format](docs/plugins/format.md)、[tree](docs/plugins/tree.md)、[column](docs/plugins/column.md)、[source](docs/plugins/source.md)、[generator](docs/plugins/generator.md)、[action](docs/plugins/action.md)、[hook](docs/plugins/hook.md)、[renderer](docs/plugins/renderer.md)） |
+| プラグインから DB、秘密情報、`fetch` を使う。設定の項目を宣言する。読み込みと信頼の決まりを確かめる | [host.md](docs/plugins/host.md)、[settings.md](docs/plugins/settings.md)、[loading.md](docs/plugins/loading.md)、[trust.md](docs/plugins/trust.md) |
+| 同梱のプラグインの動きと設定を知る。同じ種類の実装の例を読む | [docs/bundled-plugins/](docs/bundled-plugins/README.md)（プラグインごとに、ユーザーガイド、設定項目、設計、実装） |
+| 同梱のプラグイン（`packages/builtin`、`packages/plugin-llm`）を直す | そのプラグインの `implementation.md` の「変えるときに揃えるもの」と、`design.md` |
+| プラグインを設定で選ぶ（`use` と `options`、設定のキー） | [docs/CONFIG.md](docs/CONFIG.md) |
+| そのまま動くプラグインの例を見る | `examples/sample-project/loc-studio-plugins/`、`examples/remote-project/` |
+
+- プラグインを書くときは、PLUGINS.md と、作る種類のページを先に読みます。似た実装が同梱にあるとき（フォーマット、列ソース、生成器など）は、同梱のプラグインの設計と実装の文書も読みます。
+- 同梱のプラグインを変えたら、同じ変更で、そのプラグインの 4 つの文書（`guide.md`、`settings.md`、`design.md`、`implementation.md`）のうち当てはまるものを直します。
+- 同梱のプラグインを足したら、`docs/bundled-plugins/<名前>/` に同じ 4 つの文書を足し、[docs/bundled-plugins/README.md](docs/bundled-plugins/README.md) の表に足します。
 
 ## スタジオごとに違うものを、アプリのコードに決め打ちしない
 
@@ -131,7 +149,9 @@ SDK（`packages/sdk/src/types.ts`）は、プラグインとアプリの契約�
 
 ## 文書
 
-- 振る舞いを変えたら、同じ変更で文書を直します。使い始めの手順（新しいプロジェクトの作り方を含む）は [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)、設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md)、絞り込みと条件式と検索ビューと一括アクションは [docs/QUERY.md](docs/QUERY.md) です。
+- 振る舞いを変えたら、同じ変更で文書を直します。使い始めの手順（新しいプロジェクトの作り方を含む）は [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)、設定は [docs/CONFIG.md](docs/CONFIG.md)、プラグインは [docs/PLUGINS.md](docs/PLUGINS.md) と `docs/plugins/`、同梱のプラグインは `docs/bundled-plugins/`、サービス層は [docs/SERVER-API.md](docs/SERVER-API.md)、権限は [docs/WEB-MODE.md](docs/WEB-MODE.md)、絞り込みと条件式と検索ビューと一括アクションは [docs/QUERY.md](docs/QUERY.md) です。
+- 同梱のプラグイン（`packages/builtin`、`packages/plugin-llm`）の振る舞い、設定、既定を変えたら、[docs/bundled-plugins/](docs/bundled-plugins/README.md) の、そのプラグインの文書も直します。
+- プロジェクト設定のキーを足す・変えるときは、[docs/CONFIG.md](docs/CONFIG.md) の 3 か所を揃えます。キーの表（型と意味）、キーごとの扱いの表（省略したとき、基盤の項目か、Web モードで誰が変えられるか、設定の画面の欄）、「すべてのキーを書いた例」です。例は、書き換えたら、実際に読み込んで、警告が出ないことを確かめます（CLI の `plugins` と、サービス層の `info().warnings`）。
 - 文書には、確かめたことと確かめていないことを分けて書きます。動かしていない手順を、動かしたように書きません。
 - 文章は、利用者が何をすればよいか、何が起きるかを普通の文で書きます。矢印の連なり、全角ダッシュでの言い換え、決め文句は使いません。
 

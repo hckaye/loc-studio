@@ -8,8 +8,11 @@
 
 - [プロジェクト設定のファイル](#プロジェクト設定のファイル)
 - [ProjectConfig のキー](#projectconfig-のキー)
+- [すべてのキーを書いた例](#すべてのキーを書いた例)
 - [use と options](#use-と-options)
+- [name](#name)
 - [languages](#languages)
+- [pluginDirs](#plugindirs)
 - [tree](#tree)
 - [formats と syntaxes](#formats-と-syntaxes)
 - [columns](#columns)
@@ -23,6 +26,7 @@
 - [validation](#validation)
 - [storage](#storage)
 - [languageSets と grid](#languagesets-と-grid)
+- [localSettings](#localsettings)
 - [ローカル設定](#ローカル設定)
 - [環境変数](#環境変数)
 
@@ -54,6 +58,17 @@ export default defineConfig({
 コードの設定はプロジェクトのフォルダにあるコードなので、プラグインと同じく信頼の確認の対象です。画面のローカルモードでは、利用者が信頼するまで読み込まず、`loc-studio.project.json` だけで開きます。JSON だけでは設定として足りない（JSON がない、`languages` がないなど）場合、プロジェクトは制限された状態で開き、信頼するまで編集などはできません。コードの設定が import できるのは、プロジェクトのフォルダの中のファイル（相対 import）と、Node の組み込み、`@loc-studio/sdk`、プロジェクトの `node_modules` にあるパッケージだけです。import の書き方にも条件があります（[plugins/trust.md](plugins/trust.md#信頼の確認を通る書き方)）。コマンドラインと Web モードは、確認なしで読み込みます。
 
 設定の形を確かめ、通らなければプロジェクトを開けません。確かめるのは、`languages` が空でない配列で、各要素がオブジェクトであること、言語の `id` が空でない文字列で重複しないこと、`label` が文字列であること、`basedOn` が文字列で、存在する言語を指し、循環しないこと、`pluginDirs` が文字列の配列であること、`formats` / `syntaxes` / `columns` / `actions` / `validators` が配列であることです。それ以外の誤り（登録されていない実装の指定など）は警告になり、プロジェクトは開きます。警告は、画面ではステータスバーの「警告とエラー」に、CLI では `plugins` の「警告」に出ます。ただし、`actions`、`review.targets`、生成列の生成器、`localSettings.enforce` についての警告は、画面にだけ出て、CLI の `plugins` には出ません。
+
+### JSON の書き方の決まり
+
+`loc-studio.project.json` は、次の決まりで読みます。
+
+- 最上位は、JSON のオブジェクトです。キーの順は自由です。
+- 厳密な JSON です。コメントと、末尾のカンマは書けません。先頭に BOM のあるファイルも読めません。どれも、「設定ファイル … を読めませんでした: …」のエラーで、プロジェクトを開けません。
+- この文書にない最上位のキーは、無視します（警告も出ません）。キーの名前を書き間違えると、そのキーを省略したときの動きになります。
+- `${env:NAME}` を環境変数に置き換えるのは、`storage.path` と `storage.url` だけです（[storage](#storage)）。ほかの場所に書いても、置き換えません。
+
+BOM のあるファイル、コメントのあるファイル、知らないキーのあるファイルを、CLI の `tree` とサービス層で開いて確かめました（前の 2 つは開けず、知らないキーは警告なしで開けました）。
 
 ### 設定ファイルの確認（画面のローカルモード）
 
@@ -98,6 +113,143 @@ export default defineConfig({
 | `languageSets` | `Record<string, LanguageId[]>` | 言語の表示セット |
 | `grid` | `{ pinCommon?, maxPinnedRatio?, progressColumn?, progressUnit? }` | 表とツリーの進捗の設定 |
 
+必須のキーは `languages` だけです。ほかのキーを省略したときの動きと、誰がどこで変えられるかは、次のとおりです。
+
+| キー | 省略したとき | 基盤の項目 | Web モードで変えられる人 | 設定の画面の欄 |
+| --- | --- | --- | --- | --- |
+| `name` | プロジェクトのフォルダ名 | | `manage` の役割 | プロジェクト名 |
+| `languages` | 省略できない | | `manage` の役割 | 言語 |
+| `pluginDirs` | `["loc-studio-plugins"]` | ○ | サーバーの管理者 | プラグインフォルダ |
+| `tree` | `builtin.globTree`（フォルダの `.csv` と `.tsv`） | ○ | サーバーの管理者 | なし |
+| `formats` | 登録されたすべてのフォーマットを、それぞれの `match()` で判定 | ○ | サーバーの管理者 | CSV / TSV の列の対応 |
+| `syntaxes` | 登録されたすべての記法 | ○ | サーバーの管理者 | なし |
+| `sources` | 名前を付けた列ソースなし（列の `source` には、列ソースの ID を書ける） | ○ | サーバーの管理者 | なし |
+| `columns` | 「キー」と「本文」の 2 列 | | `manage` の役割 | 列 |
+| `generators` | 名前を付けた生成器なし | ○ | サーバーの管理者 | なし |
+| `actions` | 使えるアクションなし | ○ | サーバーの管理者 | なし |
+| `hooks` | 呼ぶフックなし | ○ | サーバーの管理者 | なし |
+| `roles` | 同梱の 4 つの役割 | | サーバーの管理者 | なし |
+| `editor` | 参照欄は、基になる言語の本文と、その言語の生成列。長さはコードポイントの数 | | `manage` の役割 | なし |
+| `validators` | 検証なし | | `manage` の役割 | 検証 |
+| `validation` | `blockComplete` は無効、`recheck` は有効 | | `manage` の役割 | なし |
+| `review` | 転載先なし | ○ | サーバーの管理者 | なし |
+| `storage` | SQLite の `.loc-studio/meta.db` | ○ | サーバーの管理者 | 共有 DB の場所（`path` と、共有の方式だけ。`driver`、`url`、`schema` は設定ファイルで書く） |
+| `localSettings` | 初期値も固定もなし | | `manage` の役割 | なし |
+| `languageSets` | 表示セットなし | | `manage` の役割 | なし |
+| `grid` | 共通のグループを固定、固定の上限 0.6、進捗は最初のレビュー列（なければ最初の選択式の列）を行数で数える | | `manage` の役割 | なし |
+
+- 「基盤の項目」に ○ のあるキーは、画面のローカルモードで、信頼の確認の対象です（[設定ファイルの確認](#設定ファイルの確認画面のローカルモード)）。
+- 「設定の画面の欄」が「なし」のキーは、設定ファイルを編集して変えます。列と検証の、欄のない項目（選択肢、`options` など）は、設定の画面の「詳細」で JSON のまま書けます（[GETTING-STARTED.md の「作ったあとで変える」](GETTING-STARTED.md#作ったあとで変える)）。
+- コードの設定（`loc-studio.config.ts`）にあるキーは、画面からは変えられません。
+
+## すべてのキーを書いた例
+
+次は、`ProjectConfig` の 20 のキーをすべて書いた設定ファイルです。それぞれのキーの意味は、あとの節にあります。実際のプロジェクトでは、要るキーだけを書きます。
+
+```json
+{
+  "name": "MyGame",
+  "languages": [
+    { "id": "ja", "label": "日本語", "pinned": true },
+    { "id": "en", "label": "英語", "basedOn": "ja", "group": "欧米", "hint": { "lang": "en" } },
+    { "id": "ko", "label": "韓国語", "basedOn": "ja", "group": "アジア", "pinned": ["text"] },
+    { "id": "legacy", "label": "旧訳（参照用）", "basedOn": "ja", "editable": false }
+  ],
+  "languageSets": { "出荷": ["ja", "en", "ko"] },
+
+  "pluginDirs": ["loc-studio-plugins"],
+  "storage": { "driver": "sqlite", "path": ".loc-studio/meta.db" },
+  "tree": { "use": "builtin.globTree", "options": { "include": ["Text/**/*.csv"] } },
+  "formats": [
+    {
+      "use": "builtin.csv",
+      "match": "**/*.csv",
+      "options": {
+        "key": "ID",
+        "text": { "ja": "JP", "en": "EN", "ko": "KR", "legacy": "OLD" },
+        "columns": { "maxLength": "MaxLen", "note": "Note" }
+      }
+    }
+  ],
+  "syntaxes": ["builtin.braces", "builtin.tags"],
+  "sources": {
+    "teamStatus": { "use": "builtin.db", "options": { "namespace": "mygame.status" } }
+  },
+  "generators": {
+    "mt": { "use": "llm.translate", "options": { "endpoint": "https://llm.example.internal/v1", "model": "my-model" } }
+  },
+  "actions": ["mystudio.trim"],
+  "hooks": ["mystudio.resetOnSave"],
+  "review": {
+    "targets": [{ "use": "mystudio.openTicket", "options": { "baseUrl": "https://tracker.example.com" } }]
+  },
+
+  "columns": [
+    { "use": "builtin.key", "id": "key" },
+    { "id": "note", "kind": "meta", "scope": "entry", "label": "備考", "type": "string", "source": "file" },
+    { "id": "due", "kind": "meta", "scope": "entry", "label": "期限", "type": "date", "source": "builtin.db" },
+    { "use": "builtin.text", "id": "text" },
+    { "use": "builtin.length", "id": "length", "languages": ["en", "ko"] },
+    {
+      "use": "builtin.textStatus",
+      "id": "textStatus",
+      "source": "teamStatus",
+      "type": {
+        "enum": [
+          { "value": "todo", "label": "未着手", "color": "gray" },
+          { "value": "wip", "label": "作業中", "color": "amber" },
+          { "value": "done", "label": "確定", "color": "ink", "complete": true, "from": ["wip"], "roles": ["reviewer", "manager"] }
+        ],
+        "default": "todo"
+      }
+    },
+    { "use": "builtin.reviewStatus", "id": "reviewStatus", "of": "text" },
+    { "use": "llm.translation", "id": "mt", "generator": "mt", "languages": ["en", "ko"] },
+    { "id": "tools", "kind": "actions", "scope": "language", "label": "操作", "actions": ["mystudio.trim"] }
+  ],
+  "validators": [
+    "builtin.placeholders",
+    "builtin.tagBalance",
+    "builtin.maxLength",
+    { "use": "builtin.whitespace", "severity": "info" },
+    { "use": "builtin.untranslated", "languages": ["en", "ko"] }
+  ],
+  "validation": { "blockComplete": "error", "recheck": true },
+
+  "roles": {
+    "lqa": { "label": "LQA", "can": ["edit", "review"], "editColumns": ["textStatus"], "reviewColumns": ["reviewStatus"] }
+  },
+
+  "editor": {
+    "referenceLanguages": ["en"],
+    "referenceColumns": ["note", "mt"],
+    "count": { "unit": "codepoints", "skipTokens": true }
+  },
+  "grid": { "pinCommon": true, "maxPinnedRatio": 0.6, "progressColumn": "reviewStatus", "progressUnit": "rows" },
+  "localSettings": {
+    "defaults": { "ui.theme": "light", "review.forwardOnPost": "ask" },
+    "enforce": { "plugins.local.formats": "deny" }
+  }
+}
+```
+
+この設定が前提にしているものは、次の 3 つです。
+
+- 見出しが `ID,JP,EN,KR,OLD,MaxLen,Note` の CSV（`Text/` の下）。
+- プラグインフォルダ（`loc-studio-plugins/`）に置いた、アクション `mystudio.trim` と `mystudio.openTicket`（[plugins/action.md](plugins/action.md#例) の例）、フック `mystudio.resetOnSave`（[plugins/hook.md](plugins/hook.md#例) の例）。`actions`、`hooks`、`review.targets` には同梱の実装がないので、プラグインが要ります。プラグインを置かないときは、この 3 つのキーを書きません。
+- `generators` の接続先（`endpoint`）は、例の URL です。生成を実行するまで、接続はしません。
+
+2026-11-18 に、Windows 11（Node.js 26.5.1）で、この設定ファイルと、上の CSV（3 行）、2 つの文書から取り出したプラグインを一時のフォルダに置いて、次のことを確かめました。
+
+- CLI の `plugins` とサービス層の `info()` で、読み込みエラーと警告が 1 件もないこと。最初に書いた例では、`editor.referenceColumns` に、`columns` にない列の ID を書いていて、サービス層が「設定の editor.referenceColumns にある列 "maxLength" は、設定の columns にありません。」の警告を出しました（上の例は、直したあとのものです）。
+- `tree`、`validate`、`status` が、設定どおりに動くこと（リソース 1 つ、`MaxLen` の列を使った文字数の上限、空白の指摘が `info` になること）。
+- `textStatus` を「未着手」から「確定」にする `set` が、選択肢の `from` で止められること（`更新 0 / ブロック 1`）。
+- `run mystudio.trim` で本文の前後の空白を除いて `save` すると、フックがその言語の `textStatus` を「作業中」にし、そこからは「確定」にできること。
+- 日付の列（`due`）に `2026-12-01` を書けて、`2026-02-30` は断られること。
+- `generate mt --dry-run` が、英語と韓国語の 6 件を数えること（接続はしていません）。
+
+画面では開いていません。`roles`、`editor`、`grid`、`languageSets`、`localSettings`、`review.targets` は、警告なしで読み込まれることだけを確かめました（動きは、それぞれの節と、サービス層のテストにあります）。
+
 ## use と options
 
 実装（ツリー、フォーマット、記法、列ソース、列、生成器、アクション、バリデータ、独自描画）は、プラグインが `id` を付けて登録します。設定は `use` で `id` を指定して選び、実装に渡す値を `options` に書きます。
@@ -108,7 +260,15 @@ export default defineConfig({
 
 `UseRef` は、文字列（`"builtin.globTree"`）か `{ "use": "...", "options": { ... } }` です。文字列は `options` が空の指定と同じです。`options` は、実装の関数が呼ばれるたびに `ctx.options` として渡されます（ツリーは `TreeContext.options`、フォーマットは `FormatContext.options`、列ソースは `ColumnSourceContext.options`、バリデータは `ValidateContext.options` など）。
 
-同じ `id` が複数の層で登録されたら、後の層が勝ちます（`builtin`、アプリ、プロジェクト、個人の順）。上書きしたことは警告に出ます。層は [plugins/loading.md](plugins/loading.md#プラグインフォルダと層) にあります。設定が選んだ `id` が登録されていなければ、警告になります（`tree`、`formats`、`syntaxes`、`validators`、`sources`、列の `use`、列の `source` と `renderer` について。画面では、`actions`、`review.targets`、生成列の `generator` についても出ます）。
+同じ `id` が複数の層で登録されたら、後の層が勝ちます（`builtin`、アプリ、プロジェクト、個人の順）。上書きしたことは警告に出ます。層は [plugins/loading.md](plugins/loading.md#プラグインフォルダと層) にあります。設定が選んだ `id` が登録されていなければ、警告になります（`tree`、`formats`、`syntaxes`、`validators`、`hooks`、`sources`、列の `use`、列の `source` と `renderer` について。画面では、`actions`、`review.targets`、生成列の `generator` についても出ます）。
+
+## name
+
+```json
+"name": "MyGame"
+```
+
+プロジェクトの名前です。画面の上のバーと、ツリーのいちばん上（CLI の `tree` の 1 行目）に出ます。省略すると、プロジェクトのフォルダ名になります。名前を変えても、DB の記録や信頼の確認には影響しません。
 
 ## languages
 
@@ -133,9 +293,24 @@ export default defineConfig({
 ]
 ```
 
+## pluginDirs
+
+```json
+"pluginDirs": ["loc-studio-plugins", "tools/loc-plugins"]
+```
+
+プロジェクトのプラグインを探すフォルダを、プロジェクトのフォルダからの相対パスで並べます。省略すると `["loc-studio-plugins"]` です。
+
+- 書くと、既定を置き換えます。`loc-studio-plugins` も使い続けるなら、配列に入れます。`"pluginDirs": ["my-plugins"]` と書いたプロジェクトで、CLI の `plugins` の「探したプラグインフォルダ」に `my-plugins` だけが出ることを確かめました。
+- フォルダがなくても、エラーにはなりません（`plugins` に「フォルダなし」と出ます）。
+- ここに並べたフォルダは、どれもプロジェクトの層（`project`）です。アプリのフォルダや個人のフォルダのプラグインは、この設定とは別に読み込まれます（[plugins/loading.md](plugins/loading.md#プラグインフォルダと層)）。
+- 文字列の配列でないと、プロジェクトを開けません。
+- 同梱のツリー（`builtin.globTree`）の既定の除外に入っているプラグインフォルダは、プロジェクトの直下の `loc-studio-plugins` だけです。別の名前のプラグインフォルダに `.csv` や `.tsv` があるときは、`tree` の `exclude` に足します。
+- 基盤の項目です。画面のローカルモードでは信頼の確認の対象で、Web モードではサーバーの管理者だけが変えられます。Web モードでは、プロジェクトかアプリのフォルダの中にあるものだけを使います。
+
 ## tree
 
-`tree` は、リソースの一覧と読み書きをする `TreeProvider` を選びます。既定は同梱の `builtin.globTree` で、プロジェクトのフォルダ以下のファイルを走査します。
+`tree` は、リソースの一覧と読み書きをする `TreeProvider` を選びます。既定は同梱の `builtin.globTree` で、プロジェクトのフォルダ以下のファイルを走査します。同梱のツリー、フォーマット、記法、バリデータ、列ソース、列の説明は、[bundled-plugins/builtin/](bundled-plugins/builtin/guide.md) にまとめてあります。
 
 | `builtin.globTree` の options | 型 | 既定 | 意味 |
 | --- | --- | --- | --- |
@@ -401,7 +576,7 @@ UI_GOLD,所持金：{gold} G,Gold: {gold} G,持有金：{gold} G,소지금: {gol
 
 `generators` は、生成器に名前と `options` を付けます。生成列（`kind: "generated"`）の `generator` が、この名前を指します。名前が見つからなければ、生成器の ID として探します。
 
-同梱の `@loc-studio/plugin-llm` が、LLM（OpenAI 互換の API。LiteLLM など）を使う生成器を 2 つ登録します。同梱プラグインとは別のパッケージですが、画面、サービス層、CLI のすべてのコマンドで登録されます。自作の生成器は [plugins/generator.md](plugins/generator.md) にあります。
+同梱の `@loc-studio/plugin-llm` が、LLM（OpenAI 互換の API。LiteLLM など）を使う生成器を 2 つ登録します。同梱プラグインとは別のパッケージですが、画面、サービス層、CLI のすべてのコマンドで登録されます。このプラグインの使い方、設定項目、設計、実装は、[bundled-plugins/llm/](bundled-plugins/llm/guide.md) にまとめてあります。自作の生成器は [plugins/generator.md](plugins/generator.md) にあります。
 
 | 生成器 | 作る値 | 設定の `columns` に `use` で足せる列 |
 | --- | --- | --- |
@@ -677,6 +852,27 @@ Postgres では、表を `schema` の中に作ります。1 つのデータベ�
 | `grid.progressColumn` | ツリーに進捗を出す列の ID（選択肢に `complete` のある、ステータスやレビューの列）。省略すると、最初のレビュー列、なければ最初の選択式の列 |
 | `grid.progressUnit` | 進捗の数え方。`rows`（行数。既定）、`characters`（原文の文字数。コードポイントの数）、`words`（原文を空白で区切った語数）。原文は、その言語の基になる言語（`basedOn`）の本文で、原文の言語自身の進捗は、その言語の本文で量る。行に 1 つの列は、最初の原文の言語の本文で量る。未保存の編集も量に入る。ツリーの進捗と、`status` コマンドの両方に効く。知らない値は警告にして、行数で数える |
 
+## localSettings
+
+```json
+"localSettings": {
+  "defaults": { "ui.theme": "light", "review.forwardOnPost": "ask" },
+  "enforce": { "plugins.local.formats": "deny" }
+}
+```
+
+プロジェクトの側から、利用者ごとのローカル設定（次の節）の初期値と固定を決めます。
+
+| キー | 意味 |
+| --- | --- |
+| `defaults` | ローカル設定のキーから値への対応。利用者がその項目を設定していないときの初期値になる |
+| `enforce` | ローカル設定のキーから値への対応。その項目を、この値に固定する。利用者は変えられない |
+
+- 意味を持つキーは、[既知のキー](#既知のキー)の表のものです。ほかのキーを書いても、エラーにも警告にもなりません。`secrets.*` は、`defaults` に書いても、秘密情報としては読まれません（プラグインが読む秘密情報は、ローカル設定と環境変数のものだけです）。
+- `secrets.*` と `plugins.trust` は、`enforce` に書いても無視します（[固定できないもの](#固定できないもの)）。
+- 個人のプラグインフォルダのプラグインを禁止する `plugins.local` と `plugins.local.<欄>` は、`enforce` に書きます。
+- 値の優先順位は、[優先順位](#優先順位)にあります。
+
 ## ローカル設定
 
 ローカル設定はその PC だけの設定です。JSON のオブジェクトで、ドットを含むキーをそのまま並べます。
@@ -733,7 +929,7 @@ Web モードでは、このファイルの代わりに、利用者ごとの設�
 | `secrets.<名前>` | 文字列 | 秘密情報。プラグインは `host.secrets.get("<名前>")` で読む。環境変数より優先。一覧では `********` に伏せる |
 | `plugins.local` / `plugins.local.<欄>` | `"deny"`（`enforce` に書く） | 個人のプラグインフォルダ（local 層）のプラグインを禁止する |
 
-`plugins.local.<欄>` の欄は、`trees`、`formats`、`syntaxes`、`sources`、`columns`、`generators`、`actions`、`validators`、`renderers` です。`plugins.local` を `"deny"` にすると、すべての種類を禁止します。禁止された実装は登録されず、警告が出ます。`enforce` で制限できるのは個人のフォルダ（local 層）だけです。これとは別に、画面のローカルモードでは、プロジェクトと個人のフォルダのプラグインとコードの設定を、利用者が信頼するまで読み込みません（下の `plugins.trust`）。サンプルプロジェクトは `"plugins.local.formats": "deny"` を設定しています。個人のフォルダにフォーマットを置くと禁止されることを、CLI の `plugins` で確かめました。
+`plugins.local.<欄>` の欄は、`trees`、`formats`、`syntaxes`、`sources`、`columns`、`generators`、`actions`、`validators`、`hooks`、`renderers` です。`plugins.local` を `"deny"` にすると、すべての種類を禁止します。禁止された実装は登録されず、警告が出ます。`enforce` で制限できるのは個人のフォルダ（local 層）だけです。これとは別に、画面のローカルモードでは、プロジェクトと個人のフォルダのプラグインとコードの設定を、利用者が信頼するまで読み込みません（下の `plugins.trust`）。サンプルプロジェクトは `"plugins.local.formats": "deny"` を設定しています。個人のフォルダにフォーマットを置くと禁止されることを、CLI の `plugins` で確かめました。
 
 ### 固定できないもの
 
